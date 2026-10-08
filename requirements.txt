@@ -3,10 +3,28 @@
 
 requests>=2.25.1
 warcio==1.7.4
+fsspec
+aiofiles
+url-is-in>=0.1.1
 
 # optional S3 dependencies (install via cdx_toolkit[s3])
 fsspec[s3]
 botocore
+aioboto3
+
+# optional Athena dependencies (install via cdx_toolkit[athena])
+boto3
+
+# optional DuckDB dependencies (install via cdx_toolkit[duckdb])
+duckdb
+pytz
+
+# optional Hugging Face dependencies (install via cdx_toolkit[hf])
+huggingface_hub>=0.30
+aiohttp
+
+# optional Parquet dependencies (install via cdx_toolkit[parquet])
+pyarrow
 
 # used by Makefile
 pytest>=6.2.4

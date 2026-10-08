@@ -1,3 +1,4 @@
+import calendar
 import datetime
 from email.utils import parsedate
 import logging
@@ -12,9 +13,6 @@ TIMESTAMP = '%Y%m%d%H%M%S'
 TIMESTAMP_LOW = '19780101000000'
 TIMESTAMP_HIGH = '29991231235959'
 
-# if you ask for Feb we'll pad it to the 28th even if it's a leap year
-days_in_month = (0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
-
 
 def pad_timestamp(ts):
     '''
@@ -28,11 +26,16 @@ def pad_timestamp_up(ts):
     '''
     >>> pad_timestamp_up('199802')
     '19980228235959'
+    >>> pad_timestamp_up('200002')
+    '20000229235959'
+    >>> pad_timestamp_up('20260410')
+    '20260410235959'
     '''
-    ts = ts + TIMESTAMP_HIGH[len(ts):]
-    month = ts[4:6]
-    ts = ts[:6] + str(days_in_month[int(month)]) + ts[8:]
-    return ts
+    padded = ts + TIMESTAMP_HIGH[len(ts):]
+    if len(ts) < 8:  # no day given: the last day of the month
+        last_day = calendar.monthrange(int(padded[:4]), int(padded[4:6]))[1]
+        padded = padded[:6] + f'{last_day:02d}' + padded[8:]
+    return padded
 
 
 def timestamp_to_time(ts):

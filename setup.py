@@ -8,10 +8,19 @@ from setuptools import setup, find_packages
 packages = find_packages(include=['cdx_toolkit*'])
 
 # remember: keep requires synchronized with requirements.txt
-requires = ['requests', 'warcio']
+requires = ['requests', 'warcio', 'fsspec', 'aiofiles', 'url-is-in>=0.1.1']
 
 test_requirements = ['pytest', 'pytest-cov', 'flake8', 'responses']
-optional_s3_requirements = ['fsspec[s3]', 'botocore']
+# S3 reads/writes (index files, WARCs)
+optional_s3_requirements = ['fsspec[s3]', 'botocore', 'aioboto3']
+# `cdxt index athena://...`
+optional_athena_requirements = ['boto3']
+# `cdxt index cc-url-index-s3` and other parquet indexes
+optional_duckdb_requirements = ['duckdb', 'pytz']  # pytz: DuckDB returns timestamps with time zone
+# Hugging Face Storage Buckets (hf://): `cdxt index cc-url-index-hf`, `cdxt repackage` reads and writes
+optional_hf_requirements = ['huggingface_hub>=0.30', 'aiohttp']
+# Parquet output of `cdxt index` (and Parquet input of `cdxt repackage`)
+optional_parquet_requirements = ['pyarrow']
 
 package_requirements = ['twine', 'setuptools', 'setuptools-scm']
 
@@ -19,13 +28,19 @@ dev_requirements = ['pre-commit']
 
 extras_require = {
     's3': optional_s3_requirements,
+    'athena': optional_athena_requirements,
+    'duckdb': optional_duckdb_requirements,
+    'hf': optional_hf_requirements,
+    'parquet': optional_parquet_requirements,
     'test': test_requirements,  # setup no longer tests, so make them an extra
     'package': package_requirements,
     'dev': package_requirements,
-    'all': test_requirements + package_requirements + dev_requirements + optional_s3_requirements,
+    'all': (
+        test_requirements + package_requirements + dev_requirements
+        + optional_s3_requirements + optional_athena_requirements
+        + optional_duckdb_requirements + optional_hf_requirements + optional_parquet_requirements
+    ),
 }
-
-scripts = ['scripts/cdx_size', 'scripts/cdx_iter']
 
 this_directory = path.abspath(path.dirname(__file__))
 with open(path.join(this_directory, 'README.md'), encoding='utf-8') as f:
@@ -48,9 +63,7 @@ setup(
     entry_points='''
         [console_scripts]
         cdxt = cdx_toolkit.cli:main
-        #ccathena = cdx_toolkit.cli:main_athena
     ''',
-    scripts=scripts,
     license='Apache 2.0',
     classifiers=[
         'Development Status :: 5 - Production/Stable',

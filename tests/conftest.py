@@ -1,9 +1,17 @@
 import json
 import os
+import uuid
 from pathlib import Path
 import pytest
 
 from cdx_toolkit.settings import CACHE_DIR
+
+try:
+    import boto3
+    _HAS_BOTO3 = True
+except ImportError:  # pragma: no cover - exercised in minimal installs
+    boto3 = None
+    _HAS_BOTO3 = False
 
 try:
     import botocore.session
@@ -22,6 +30,12 @@ try:
 except ImportError:  # pragma: no cover - exercised in minimal installs
     _HAS_FSSPEC = False
 
+try:
+    import duckdb  # noqa: F401
+    _HAS_DUCKDB = True
+except ImportError:  # pragma: no cover - exercised in minimal installs
+    _HAS_DUCKDB = False
+
 import functools
 from typing import Dict, Optional
 import requests
@@ -31,13 +45,17 @@ import shutil
 
 from unittest.mock import patch
 
-
+TEST_DATA_PATH = Path(__file__).parent / 'data'
 TEST_DATA_BASE_PATH = Path(__file__).parent / 'data'
 TEST_S3_BUCKET = os.environ.get('CDXT_TEST_S3_BUCKET', 'commoncrawl-ci-temp')
+TEST_ATHENA_S3_LOCATION = 's3://commoncrawl-ci-temp/athena-results/'
+TEST_ATHENA_DATABASE = 'ccindex'
+DISABLE_ATHENA_TESTS = bool(os.environ.get('CDXT_DISABLE_ATHENA_TESTS', False))
 DISABLE_S3_TESTS = bool(os.environ.get('CDXT_DISABLE_S3_TESTS', False))
 
-# Cache for AWS access check to avoid repeated network calls
+# Cache for AWS S3/Athena access check to avoid repeated network calls
 _aws_s3_access_cache = None
+_aws_athena_access_cache = None
 
 
 @pytest.fixture(scope='session', autouse=True)
@@ -92,6 +110,96 @@ def requires_aws_s3(func):
             not check_aws_s3_access(), reason='AWS S3 access not available (no credentials or permissions)'
         )(func)
     )
+
+
+def check_aws_athena_query_execution_access():
+    """Check if AWS Athena StartQueryExecution permission is available."""
+    try:
+        # Use IAM simulation instead of actual query execution
+        iam_client = boto3.client('iam')
+        response = iam_client.simulate_principal_policy(
+            PolicySourceArn=f'arn:aws:sts::{boto3.client("sts").get_caller_identity()["Account"]}:assumed-role/your-role/session',  # noqa: E501
+            ActionNames=['athena:StartQueryExecution'],
+            ResourceArns=['*'],
+        )
+
+        # Check if access is allowed
+        return response['EvaluationResults'][0]['EvalDecision'] == 'allowed'
+
+    except (ClientError, NoCredentialsError):
+        return False
+
+
+def check_aws_athena_access():
+    """Check if AWS Athena access is available."""
+    global _aws_athena_access_cache
+
+    if not _HAS_BOTO3:
+        return False
+
+    if _aws_athena_access_cache is not None:
+        return _aws_athena_access_cache
+
+    try:
+        client = boto3.client('athena')
+
+        # Try list databasets
+        client.list_databases(CatalogName='AwsDataCatalog')
+
+        # Try query access
+        _aws_athena_access_cache = check_aws_athena_query_execution_access()
+    except (NoCredentialsError, ClientError):
+        _aws_athena_access_cache = False
+
+    return _aws_athena_access_cache
+
+
+def requires_aws_athena(func):
+    """Pytest decorator that skips test if AWS Athena access is not available."""
+    if not _HAS_BOTO3:
+        return pytest.mark.skipif(
+            True, reason='S3 dependencies are not installed; install cdx_toolkit[s3] to enable Athena tests.'
+        )(func)
+
+    return pytest.mark.skipif(DISABLE_ATHENA_TESTS, reason='AWS Athena access is disabled via environment variable.')(
+        pytest.mark.skipif(
+            not check_aws_athena_access(), reason='AWS Athena access not available (no credentials or permissions)'
+        )(func)
+    )
+
+
+def requires_duckdb(func):
+    """Pytest decorator that skips a test if the optional duckdb dependency is missing."""
+    return pytest.mark.skipif(
+        not _HAS_DUCKDB, reason='duckdb is not installed; install cdx_toolkit[duckdb] to enable DuckDB tests.'
+    )(func)
+
+
+@pytest.fixture
+def s3_tmpdir():
+    """S3 equivalent of tmpdir - provides a temporary S3 path and handles cleanup."""
+    bucket_name = TEST_S3_BUCKET
+
+    # Generate unique prefix using UUID to avoid collisions
+    temp_prefix = f'cdx_toolkit/ci/tmpdirs/{uuid.uuid4().hex}'
+
+    # Yield the S3 path
+    yield f's3://{bucket_name}/{temp_prefix}'
+
+    try:
+        # Cleanup: delete all objects with this prefix
+        s3_client = boto3.client('s3')
+
+        # List all objects with the temp prefix
+        response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=temp_prefix)
+
+        if 'Contents' in response:
+            # Delete all objects
+            objects_to_delete = [{'Key': obj['Key']} for obj in response['Contents']]
+            s3_client.delete_objects(Bucket=bucket_name, Delete={'Objects': objects_to_delete})
+    except (NoCredentialsError, ClientError, ConnectionError, EndpointConnectionError):
+        # Ignore cleanup errors - test objects will eventually expire
+        pass
 
 
 def flexible_param_matcher(expected_params):
@@ -195,28 +303,39 @@ def mock_response_from_jsonl(mock_data_name, mock_data_dir: Optional[str] = None
                 )
 
 
-def conditional_mock_responses(func):
+def conditional_mock_responses(func=None, *, auto_mock_data: bool = True):
     """Conditionally applies @responses.activate and auto-loads mock data based on DISABLE_MOCK_RESPONSES env var.
 
     The mock data is automatically loaded from JSONL file from the tests/data directory
     and dependinng on the test module and test function.
+
+    Args:
+        auto_mock_data: If True, auto-loads test-specific mock data. If False, only loads CC endpoints.
     """
 
-    # If the flag DISABLE_MOCK_RESPONSES is not detected, response mocking remains enabled
-    if not os.environ.get('DISABLE_MOCK_RESPONSES'):
-        # Add responses.activate
-        func = add_mock_responses(func)
+    def decorator(f):
+        # If the flag DISABLE_MOCK_RESPONSES is not detected, response mocking remains enabled
+        if not os.environ.get('DISABLE_MOCK_RESPONSES'):
+            # Add responses.activate
+            f = add_mock_responses(f, auto_mock_data=auto_mock_data)
 
-    if os.environ.get('SAVE_MOCK_RESPONSES'):
-        # Mock data is saved by capturing output from requests.get
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            with patch('requests.get', side_effect=_custom_behavior_with_original(requests.get)):
-                return func(*args, **kwargs)
+        if os.environ.get('SAVE_MOCK_RESPONSES'):
+            # Mock data is saved by capturing output from requests.get
+            @functools.wraps(f)
+            def wrapper(*args, **kwargs):
+                with patch('requests.get', side_effect=_custom_behavior_with_original(requests.get)):
+                    return f(*args, **kwargs)
 
-        return wrapper
+            return wrapper
 
-    return func
+        return f
+
+    if func is None:
+        # Called with arguments: @conditional_mock_responses(auto_mock_data=False)
+        return decorator
+    else:
+        # Called without arguments: @conditional_mock_responses
+        return decorator(func)
 
 
 def save_response_as_mock_data(test_info: str, request_url: str, request_params: Dict, resp, output_base_dir: str):
@@ -283,14 +402,15 @@ def _custom_behavior_with_original(original_func):
     return custom_behavior
 
 
-def add_mock_responses(func):
+def add_mock_responses(func, auto_mock_data: bool = True):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         # Load mock data for index calls (same for many test functions)
         mock_response_from_jsonl('test_get_cc_endpoints', 'test_cc')
 
         # Auto-load mock data based on function name
-        mock_response_from_jsonl(func.__name__, func.__module__.split('.')[-1])
+        if auto_mock_data:
+            mock_response_from_jsonl(func.__name__, func.__module__.split('.')[-1])
         return func(*args, **kwargs)
 
     return responses.activate(wrapper)
