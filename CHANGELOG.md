@@ -1,3 +1,32 @@
+- unreleased
+	+ new command line interface: `cdxt index` and `cdxt repackage` (see README)
+	+ `cdxt iter` is a deprecated alias of `cdxt index` (same arguments, prints a deprecation warning)
+	+ removed `cdxt size` and `cdxt warc`; they print the equivalent new command
+	+ `cdxt index`: `--hostname`, `--domain`, repeatable `--url`, `-o/--output` (local or remote),
+	  JSONL/CDXJ/CSV/TSV output, all fields by default, `--count` replaces `size`
+	+ `cdxt repackage`: reads captures from a file or stdin, human-readable `--size`, `--is-part-of`, `--description`
+	+ `--cc-sort` is now passed on to the CDX fetcher
+	+ `cdxt index` queries Common Crawl's columnar URL index with DuckDB (`cc-url-index-s3`, `cc-url-index-hf`, `*.parquet`)
+	  or AWS Athena (`athena://...`): `--hostname`/`--domain`/`--crawl`/`--limit` or your own `--sql`, cost confirmation (`--yes`), `--dry-run`
+	+ `cdxt repackage` copies WARC records byte-for-byte with the async WARC fetcher (from the feat/warc-range-sources branch):
+	  reads from https://, s3:// and hf:// (Hugging Face Storage Buckets), writes to local, s3:// or hf://,
+	  `--processes`, `--parallel-readers`, `--add-metadata-record`, glob input; output files are now named `<prefix>-001.warc.gz`
+	  (`--wb` wayback replays keep the old writer and names); with `--processes`, the processes share one file counter
+	  and write the final file names directly, so each `warcinfo` record names its own file
+	+ `hf://` WARC reads resolve each WARC file once and read its records from the signed CDN URL
+	  (one HF Resolvers rate-limit request per WARC file instead of per record)
+	+ `cdxt index` reads CDX files (local or remote, globs): `--url`/`--hostname`/`--domain`/`--url-file` matched as SURT
+	  prefixes (`--url-file-type domain` for host lists), one output per CDX file for an `-o` path without extension,
+	  `--processes`
+	+ SQL indexes: `--url` patterns (matched against `url_surtkey`), `--from`/`--to` (fetch time), `--language` (primary content language, three-letter ISO 639-3 codes)
+	+ `--output-format cdx` / `--index-format cdx` as another name for `cdxj`; clear error for globs over http(s)
+	+ Parquet output for `cdxt index` and Parquet input for `cdxt repackage` (`cdx_toolkit[parquet]`)
+	+ `cdxt repackage`: default `--prefix REPACKAGE` (was `TEST`), no WARC file is written without captures,
+	  a full URL in `warc_filename`/`filename` is used as it is (the `warc_url` column is gone)
+	+ fixed `--to` with a day (e.g. `--to 20240410`), which was padded to the end of the month, and February in leap years
+	+ removed the deprecated `cdx_iter` and `cdx_size` scripts
+	+ new extras: `athena`, `duckdb`, `hf`, `parquet`; `fsspec` and `aiofiles` are now required
+
 - 0.9.38
 	+ deprecated support for py3.7 and py.3.8
 	+ added support for py3.13 and py3.14
