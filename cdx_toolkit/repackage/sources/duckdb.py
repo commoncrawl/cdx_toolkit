@@ -2,9 +2,8 @@ import logging
 from typing import Iterator, List, Optional
 
 from cdx_toolkit.repackage.data_classes import RangeJob
-from cdx_toolkit.repackage.sources.base import RangeJobSource, CostEstimate
+from cdx_toolkit.repackage.sources.base import RangeJobSource
 from cdx_toolkit.repackage.sources.sql_base import (
-    build_sql,
     validate_result_columns,
     join_warc_url,
     REQUIRED_RESULT_COLUMNS,
@@ -35,48 +34,15 @@ def _build_from_clause(index_path: str, crawls: Optional[List[str]]) -> str:
 
 
 class DuckDbSource(RangeJobSource):
-    """RangeJobs from a query against the CC columnar index via DuckDB (read_parquet on S3).
+    """RangeJobs (or rows) from a SQL query run with DuckDB, e.g. over the CC columnar index on S3.
 
-    Reads the public CommonCrawl parquet directly; AWS region/credentials come from
-    the environment (the public bucket is readable with valid credentials)."""
+    AWS region/credentials come from the environment (the AWS credential chain); the
+    public bucket is readable with valid credentials."""
 
-    def __init__(
-        self,
-        *,
-        query: Optional[str] = None,
-        hostnames: Optional[List[str]] = None,
-        domains: Optional[List[str]] = None,
-        crawls: Optional[List[str]] = None,
-        index_path: str,
-        warc_download_prefix: Optional[str],
-        limit: int = 0,
-        sort: bool = True,
-        region_name: str = 'us-east-1',
-    ):
-        self.raw_query = query
-        self.hostnames = hostnames
-        self.domains = domains
-        self.crawls = crawls
-        self.index_path = index_path
+    def __init__(self, *, query: str, warc_download_prefix: Optional[str] = None, region_name: str = 'us-east-1'):
+        self.query = query
         self.warc_download_prefix = warc_download_prefix
-        self.limit = limit
-        self.sort = sort
         self.region_name = region_name
-
-    def estimate_cost(self) -> CostEstimate:
-        if self.raw_query is not None:
-            return CostEstimate(n_crawls=None, engine='duckdb')
-        return CostEstimate(n_crawls=len(self.crawls) if self.crawls else None, engine='duckdb')
-
-    def _build_query(self) -> str:
-        if self.raw_query is not None:
-            return self.raw_query
-        from_clause = _build_from_clause(self.index_path, self.crawls)
-        # crawl pruning is done in the FROM glob, so no crawl IN (...) in the WHERE
-        return build_sql(
-            from_clause, self.hostnames, crawls=None, limit=self.limit,
-            url_host_registered_domains=self.domains, order_by=self.sort,
-        )
 
     def iter_rows(self, validate: bool = False) -> Iterator[dict]:
         """Run the query and yield the result rows as dicts (column name -> value)."""
@@ -85,7 +51,7 @@ class DuckDbSource(RangeJobSource):
                 'DuckDB engine requires optional dependencies. Install cdx_toolkit[duckdb].'
             )
 
-        query = self._build_query()
+        query = self.query
         logger.info('Executing DuckDB query: %s', query)
 
         con = duckdb.connect()
@@ -100,8 +66,12 @@ class DuckDbSource(RangeJobSource):
                 con.execute(f"CREATE SECRET (TYPE s3, PROVIDER credential_chain, REGION '{self.region_name}');")
             except Exception as e:  # pragma: no cover - no credentials or aws extension unavailable
                 logger.debug('duckdb AWS credential chain not used: %r', e)
-            # Be resilient to transient S3 read timeouts on large parquet partitions.
-            for stmt in ('SET http_timeout=120000;', 'SET http_retries=5;'):
+            # Be resilient to transient S3 read timeouts and throttling (503 SlowDown) on large parquet
+            # partitions: up to 8 retries, waiting 1s, 2s, 4s, ... (about 4 minutes in total)
+            for stmt in (
+                'SET http_timeout=120000;', 'SET http_retries=8;', 'SET http_retry_wait_ms=1000;',
+                'SET http_retry_backoff=2;',
+            ):
                 try:
                     con.execute(stmt)
                 except Exception as e:  # pragma: no cover - setting unsupported on this duckdb

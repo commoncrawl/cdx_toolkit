@@ -181,10 +181,10 @@ class SqlBackend(IndexBackend):
 
     def from_clause(self, crawls: Optional[List[str]]) -> Tuple[str, bool]:
         """FROM expression for the guided query, and whether it already prunes the crawls."""
-        raise NotImplementedError
+        raise NotImplementedError  # pragma: no cover
 
     def iter_sql_rows(self, sql: str) -> Iterator[dict]:
-        raise NotImplementedError
+        raise NotImplementedError  # pragma: no cover
 
     def prepare(self, query: IndexQuery, order_by: bool = True) -> Tuple[str, Optional[int]]:
         """The SQL to run and the number of crawls it is restricted to (None = unknown)."""
@@ -254,7 +254,7 @@ class DuckDbBackend(SqlBackend):
     def iter_sql_rows(self, sql):
         from cdx_toolkit.repackage.sources.duckdb import DuckDbSource
 
-        source = DuckDbSource(query=sql, index_path=self.location, warc_download_prefix=None)
+        source = DuckDbSource(query=sql)
         return source.iter_rows()
 
 

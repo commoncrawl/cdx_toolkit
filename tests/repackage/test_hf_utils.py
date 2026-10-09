@@ -7,6 +7,7 @@ import pytest
 
 from cdx_toolkit.repackage.hf_utils import (
     HfHttpReader,
+    make_hf_reader,
     signed_url_expiry,
     is_hf_url,
     hf_fs_path,
@@ -186,3 +187,89 @@ def test_waits_on_resolver_rate_limit():
 
     assert reader.throttle_count == 2
     assert reader.resolve_count == 1
+
+
+def test_resolve_without_redirect_reads_from_the_resolve_url():
+    session = FakeSession(head_statuses=[200])
+    reader = HfHttpReader(session, token='tok')
+
+    assert asyncio.run(_read(reader, WARC_A, 0, 4)) == DATA[0:4]
+    url, headers = session.gets[0]
+    assert url.startswith('https://huggingface.co/buckets/') and headers['Authorization'] == 'Bearer tok'
+
+
+def test_resolve_errors_are_retried_then_raised():
+    # resolving is retried within each read attempt (3 x 3 attempts)
+    session = FakeSession(head_statuses=[500] * 3)
+    assert asyncio.run(_read(HfHttpReader(session), WARC_A, 0, 4)) == DATA[0:4]
+
+    session = FakeSession(head_statuses=[500] * 9)
+    with pytest.raises(OSError, match='HF HEAD .* -> 500'):
+        asyncio.run(_read(HfHttpReader(session), WARC_A, 0, 4))
+    assert len(session.heads) == 9
+
+
+@pytest.mark.parametrize(
+    'get_statuses, offset, length, error',
+    [
+        ([500, 500, 500], 0, 4, 'HF GET .* -> 500'),
+        ([], 1000, 100, 'returned 24 bytes, expected 100'),  # short read
+    ],
+)
+def test_read_errors_are_retried_then_raised(get_statuses, offset, length, error):
+    session = FakeSession(get_statuses=get_statuses)
+    with pytest.raises(OSError, match=error):
+        asyncio.run(_read(HfHttpReader(session), WARC_A, offset, length))
+    assert len(session.gets) == 3
+
+
+def test_cdn_rate_limit_is_waited_out(caplog):
+    session = FakeSession(get_statuses=[429])
+    reader = HfHttpReader(session)
+
+    async def run():
+        data = await _read(reader, WARC_A, 0, 4)
+        await reader.aclose()
+        return data
+
+    with caplog.at_level('INFO', logger='cdx_toolkit.repackage.hf_utils'):
+        assert asyncio.run(run()) == DATA[0:4]
+    assert reader.throttle_count == 1
+    assert 'HF reader: 1 records read with 1 resolve requests' in caplog.text
+    assert 'HF resolver throttling: 1 x 429' in caplog.text
+
+
+def test_gives_up_after_too_many_rate_limits(monkeypatch):
+    monkeypatch.setattr(HfHttpReader, 'MAX_THROTTLE_RETRIES', 0)
+    session = FakeSession(get_statuses=[429, 429, 429])
+    with pytest.raises(OSError, match='HF 429: gave up after'):
+        asyncio.run(_read(HfHttpReader(session), WARC_A, 0, 4))
+
+
+def test_signed_url_cache_is_bounded(monkeypatch):
+    monkeypatch.setattr(HfHttpReader, 'MAX_CACHED_URLS', 1)
+    session = FakeSession()
+    reader = HfHttpReader(session)
+
+    async def run():
+        for url in (WARC_A, WARC_B, WARC_A):
+            await _read(reader, url, 0, 4)
+
+    asyncio.run(run())
+    assert len(session.heads) == 3  # WARC_A was evicted by WARC_B
+    assert list(reader._signed_urls) == [
+        'https://huggingface.co/buckets/commoncrawl/commoncrawl/resolve/crawl-data/a.warc.gz',
+    ]
+
+
+def test_make_hf_reader():
+    pytest.importorskip('aiohttp')
+    pytest.importorskip('huggingface_hub')
+
+    async def run():
+        with patch('huggingface_hub.get_token', return_value='tok'):
+            async with make_hf_reader() as reader:
+                return reader
+
+    reader = asyncio.run(run())
+    assert isinstance(reader, HfHttpReader) and reader.token == 'tok'

@@ -1,4 +1,4 @@
-.PHONY: init test clean_coverage test_coverage lint distclean distcheck dist install
+.PHONY: init test example clean_coverage test_coverage lint distclean distcheck dist install
 
 init36:
 	# packages are deprecating support, so this uses exact versions
@@ -12,6 +12,9 @@ unit:
 
 test:
 	PYTHONPATH=. py.test --doctest-modules cdx_toolkit tests -v -v
+
+# runs against the live Common Crawl index (not part of `test`: connections from CI runners time out)
+example:
 	PYTHONPATH=. examples/iter-and-warc.py
 
 clean_coverage:

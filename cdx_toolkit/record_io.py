@@ -1,22 +1,18 @@
 '''
 Reading and writing index records (captures) as JSONL, CDXJ, CSV, TSV or Parquet.
 
-Paths can be local or remote (via fsspec, if installed), optionally gzipped; "-" is stdin/stdout.
+Paths can be local or remote (via fsspec), optionally gzipped; "-" is stdin/stdout.
 Parquet needs the optional pyarrow dependency (cdx_toolkit[parquet]) and a file path.
 '''
 import contextlib
 import csv
-import gzip
 import itertools
 import json
 import re
 import sys
 from typing import IO, Iterable, Iterator, List, Mapping, Optional
 
-try:
-    import fsspec
-except ImportError:  # pragma: no cover - exercised in minimal installs
-    fsspec = None
+import fsspec
 
 
 TEXT_FORMATS = ('jsonl', 'cdxj', 'csv', 'tsv')
@@ -72,13 +68,7 @@ def open_text(path: str, mode: str) -> IO:
     """Open a local or remote text file; '-' means stdin/stdout (which is not closed)."""
     if path == '-':
         return contextlib.nullcontext(sys.stdout if 'w' in mode else sys.stdin)
-    if fsspec is not None:
-        return fsspec.open(path, mode + 't', compression='infer', newline='')
-    if '://' in path:
-        raise RuntimeError(f'Reading or writing {path} requires fsspec. Install cdx_toolkit[s3].')
-    if path.endswith('.gz'):
-        return gzip.open(path, mode + 't', newline='')
-    return open(path, mode, newline='')
+    return fsspec.open(path, mode + 't', compression='infer', newline='')
 
 
 class RecordWriter:
@@ -138,12 +128,6 @@ def expand_paths(path: str) -> List[str]:
     if not is_glob(path):
         return [path]
     check_glob(path)
-    if fsspec is None:
-        import glob
-
-        if '://' in path:
-            raise RuntimeError(f'Reading {path} requires fsspec. Install cdx_toolkit[s3].')
-        return sorted(glob.glob(path))
     fs, fs_path = fsspec.url_to_fs(path)
     return [fs.unstrip_protocol(p) for p in sorted(fs.glob(fs_path))]
 
@@ -232,7 +216,7 @@ def write_parquet(records: Iterable[Mapping], path: str, fields: Optional[List[s
     n = 0
     schema = None
     writer = None
-    with fsspec.open(path, 'wb') if fsspec is not None else open(path, 'wb') as fh:
+    with fsspec.open(path, 'wb') as fh:
         try:
             batch = []
             for record in itertools.chain(records, [None]):
@@ -261,7 +245,7 @@ def write_parquet(records: Iterable[Mapping], path: str, fields: Optional[List[s
 
 def read_parquet(path: str) -> Iterator[dict]:
     pa = import_pyarrow()
-    with fsspec.open(path, 'rb') if fsspec is not None else open(path, 'rb') as fh:
+    with fsspec.open(path, 'rb') as fh:
         for batch in pa.parquet.ParquetFile(fh).iter_batches():
             for record in batch.to_pylist():
                 yield normalize_field_names({k: v for k, v in record.items() if v is not None})

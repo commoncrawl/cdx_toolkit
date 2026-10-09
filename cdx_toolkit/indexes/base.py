@@ -29,15 +29,17 @@ class IndexBackend(ABC):
         """Yield the selected captures as mappings with CDX field names (url, timestamp, filename, ...).
 
         Backends apply --limit themselves, so it can be pushed down to the index."""
-        raise NotImplementedError
+        raise NotImplementedError  # pragma: no cover
 
+    @abstractmethod
     def count(self, query: IndexQuery) -> int:
         """Cheap (possibly estimated) number of captures matching the query."""
-        raise UsageError(f'--count is not supported for the {self.name} index')
+        raise NotImplementedError  # pragma: no cover
 
+    @abstractmethod
     def explain(self, query: IndexQuery) -> str:
         """Describe what would be queried (--dry-run), without querying the index."""
-        raise UsageError(f'--dry-run is not supported for the {self.name} index')
+        raise NotImplementedError  # pragma: no cover
 
 
 def iter_index_records(backend: IndexBackend, query: IndexQuery) -> Iterator[Mapping]:

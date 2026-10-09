@@ -4,7 +4,7 @@ import time
 from typing import Iterator, Iterable, Optional
 
 from cdx_toolkit.repackage.data_classes import RangeJob
-from cdx_toolkit.repackage.sources.base import RangeJobSource, CostEstimate
+from cdx_toolkit.repackage.sources.base import RangeJobSource
 from cdx_toolkit.repackage.sources.sql_base import (
     validate_result_columns,
     join_warc_url,
@@ -28,7 +28,6 @@ class AthenaSource(RangeJobSource):
         database: str,
         s3_output_location: str,
         warc_download_prefix: Optional[str],
-        n_crawls: Optional[int] = None,
         region_name: str = 'us-east-1',
         max_wait_time: int = 300,
     ):
@@ -36,12 +35,8 @@ class AthenaSource(RangeJobSource):
         self.database = database
         self.s3_output_location = s3_output_location
         self.warc_download_prefix = warc_download_prefix
-        self._n_crawls = n_crawls
         self.region_name = region_name
         self.max_wait_time = max_wait_time
-
-    def estimate_cost(self) -> CostEstimate:
-        return CostEstimate(n_crawls=self._n_crawls, engine='athena')
 
     def _make_client(self):
         import boto3
@@ -194,9 +189,3 @@ def iter_range_jobs(client, query_execution_id: str, warc_download_prefix: Optio
     validate_result_columns(list(first))
     for row in itertools.chain([first], rows):
         yield row_to_range_job(row, warc_download_prefix)
-
-
-def get_databases(client) -> list:
-    """Get list of available databases"""
-    response = client.list_databases(CatalogName='AwsDataCatalog')
-    return [db['Name'] for db in response['DatabaseList']]

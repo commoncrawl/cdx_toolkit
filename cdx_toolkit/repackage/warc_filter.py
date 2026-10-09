@@ -3,7 +3,6 @@ import contextlib
 import logging
 import os
 import statistics
-import sys
 from typing import Callable, List, Optional, Dict
 
 
@@ -169,15 +168,8 @@ class WARCFilter:
 
         Stage-1 clients/connections are owned by the source, so this only builds the
         read/write S3 clients used to fetch WARC ranges and write output.
-
-        Raises:
-            SystemExit: If S3 is needed but Python version is < 3.9.
         """
         if self.needs_aws():
-            if sys.version_info.major < 3 or (sys.version_info.major >= 3 and sys.version_info.minor < 9):
-                logger.error('Reading and writing to S3 requires Python version >= 3.9')
-                sys.exit(1)
-
             import aioboto3
             from botocore.config import Config
 
@@ -477,6 +469,7 @@ class WARCFilter:
         writer = None
         current_file_sequence = 0
         current_file_size = 0
+        records_in_file = 0
 
         new_writer_kwargs = dict(
             s3_client=s3_client,
@@ -521,18 +514,24 @@ class WARCFilter:
                             writer, current_file_size = await self.start_file(
                                 current_file_sequence, **new_writer_kwargs
                             )
-
-                        # Check if we need to rotate files due to size limit
-                        writer, current_file_sequence, current_file_size = await self.rotate_files(
-                            writer=writer,
-                            current_file_sequence=current_file_sequence,
-                            current_file_size=current_file_size,
-                            added_byte_size=len(item.data),
-                            **new_writer_kwargs,
-                        )
+                            records_in_file = 0
+                        elif records_in_file:
+                            # Check if we need to rotate files due to size limit (a file gets at least
+                            # one record, also if the record is larger than the size limit)
+                            previous_sequence = current_file_sequence
+                            writer, current_file_sequence, current_file_size = await self.rotate_files(
+                                writer=writer,
+                                current_file_sequence=current_file_sequence,
+                                current_file_size=current_file_size,
+                                added_byte_size=len(item.data),
+                                **new_writer_kwargs,
+                            )
+                            if current_file_sequence != previous_sequence:
+                                records_in_file = 0
 
                         # Write actual response record
                         await writer.write(item.data)
+                        records_in_file += 1
                         current_file_size += len(item.data)
                         tracker.add(bytes_count=len(item.data), records_count=item.job.records_count)
 

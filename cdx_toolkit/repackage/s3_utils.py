@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Tuple
+from typing import Optional, Tuple
 from os import urandom
 
 try:
@@ -27,8 +27,8 @@ def parse_s3_uri(uri: str) -> Tuple[str, str]:
     return rest[:i], rest[i+1:]
 
 
-def is_s3_url(url: str) -> bool:
-    return url.startswith('s3:/')
+def is_s3_url(url: Optional[str]) -> bool:
+    return bool(url) and url.startswith('s3:/')
 
 
 async def with_retries(coro_factory, *, op_name: str, max_attempts: int, base_backoff_seconds: float):

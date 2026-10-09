@@ -107,7 +107,7 @@ def test_one_output_per_cdx_file(tmp_path, processes):
         '--processes', str(processes),
     ])
 
-    outputs = sorted(str(p.relative_to(out)) for p in out.rglob('*') if p.is_file())
+    outputs = sorted(p.relative_to(out).as_posix() for p in out.rglob('*') if p.is_file())
     assert outputs == ['a/cdx-00001.gz', 'b/cdx-00002.gz']
     with gzip.open(out / 'a' / 'cdx-00001.gz', 'rt') as f:
         # the lines are copied unchanged

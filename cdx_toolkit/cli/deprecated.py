@@ -61,10 +61,6 @@ def translate(args: List[str]) -> str:
             index = value
         elif option in ('-v', '-vv', '--verbose'):
             index_args.append(option)
-        elif option == '--jsonl':
-            index_args += ['--output-format', 'jsonl']
-        elif option == '--csv':
-            index_args += ['--output-format', 'csv']
         elif option in INDEX_OPTIONS:
             index_args += [option, value]
         elif option in REPACKAGE_OPTIONS:

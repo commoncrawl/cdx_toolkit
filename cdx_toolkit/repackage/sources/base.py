@@ -20,16 +20,11 @@ class RangeJobSource(ABC):
     A source owns its own stage-1 resource (Athena client, DuckDB connection, or an
     fsspec file handle) and yields RangeJobs synchronously; the pipeline orchestrator
     bridges the sync generator into the async fetch/write stages, and owns queueing,
-    the record limit, counting, and stop-sentinel emission."""
-
-    def estimate_cost(self) -> Optional[CostEstimate]:
-        """Return a CostEstimate for the cost guard, or None for sources that never
-        incur a per-scan charge (cdx files, csv)."""
-        return None
+    counting, and stop-sentinel emission."""
 
     @abstractmethod
     def iter_range_jobs(self) -> Iterator[RangeJob]:
         """Yield RangeJobs. Implementations open their own client/connection lazily
         and close it in a finally. Each RangeJob carries `url` (authoritative for
         fetching) and, where known, the relative `filename`."""
-        raise NotImplementedError
+        raise NotImplementedError  # pragma: no cover
