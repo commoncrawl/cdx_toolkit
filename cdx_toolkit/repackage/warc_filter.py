@@ -6,6 +6,7 @@ import statistics
 from typing import Callable, List, Optional, Dict
 
 
+from cdx_toolkit.aws import botocore_config
 from cdx_toolkit.repackage.s3_utils import (
     is_s3_url,
 )
@@ -53,7 +54,7 @@ class WARCFilter:
         # writer_kwargs: Optional[Dict] = None,
         range_jobs_queue_size: int = 1000,
         warc_records_queue_size: int = 200,
-        aws_region_name: str = 'us-east-1',
+        aws_region_name: Optional[str] = None,
         warc_version: str = '1.0',
         content_type: Optional[str] = None,
         min_part_size: int = 5 * 1024 * 1024,  # 5 MiB (for upload)
@@ -76,7 +77,7 @@ class WARCFilter:
             writer_kwargs: Optional additional kwargs for writers.
             range_jobs_queue_size: Maximum size of range jobs queue.
             warc_records_queue_size: Maximum size of WARC records queue.
-            aws_region_name: AWS region name for S3 operations.
+            aws_region_name: AWS region for S3 operations (default: the user's AWS configuration, else us-east-1).
             warc_version: WARC format version (e.g., '1.0' or '1.1').
             content_type: Optional content type for WARC output.
             min_part_size: Minimum part byte size for multipart uploads (default: 5 MiB).
@@ -145,24 +146,6 @@ class WARCFilter:
         """
         return is_s3_url(self.warc_download_prefix) or is_s3_url(self.prefix_path)
 
-    def get_boto3_base_config(self) -> Dict:
-        """Get boto3 base configuration for AWS client.
-
-        Returns:
-            Dict: Boto3 base configuration object with retry and timeout settings.
-        """
-        # Calculate max connections based on parallelism
-        # Each reader + writer needs connections, plus some overhead for retries
-        # max_pool_connections = max(50, (self.num_readers + self.num_writers) * 2)
-
-        return dict(
-            region_name=self.aws_region_name,
-            retries={
-                'max_attempts': max(2, self.max_attempts),
-                'mode': 'adaptive',  # Better than 'standard' for variable workloads
-            },
-        )
-
     async def get_aws_clients(self) -> Optional[Dict]:
         """Return async S3 clients for WARC reads/writes if needed.
 
@@ -171,24 +154,25 @@ class WARCFilter:
         """
         if self.needs_aws():
             import aioboto3
-            from botocore.config import Config
 
             session = aioboto3.Session()
 
+            # region, retries and S3 settings: Common Crawl's recommended defaults, unless the
+            # user configured them (see cdx_toolkit.aws); an explicit aws_region_name wins
             # High-throughput config for range reads
-            read_config = Config(
+            read_config = botocore_config(
+                region_name=self.aws_region_name,
                 max_pool_connections=self.num_readers * 3,
                 read_timeout=300,
                 tcp_keepalive=True,
-                **self.get_boto3_base_config(),
             )
 
             # Optimized config for multipart uploads (single writer)
-            write_config = Config(
+            write_config = botocore_config(
+                region_name=self.aws_region_name,
                 max_pool_connections=8,
                 read_timeout=120,
                 connect_timeout=10,
-                **self.get_boto3_base_config(),
             )
 
             return {

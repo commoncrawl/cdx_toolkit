@@ -35,6 +35,17 @@ $ pip install cdx_toolkit[parquet] # Parquet output (and input of cdxt repackage
 $ pip install cdx_toolkit[all]     # install all optional dependencies
 ```
 
+### S3 settings
+
+For requests to S3 (e.g. `s3://commoncrawl`), `cdxt` uses Common Crawl's
+recommended AWS settings: region `us-east-1`, `retry_mode = adaptive`,
+`max_attempts = 100000`, and for S3 `addressing_style = virtual`,
+`payload_signing_enabled = false` and `max_concurrent_requests = 2`.
+Settings you configured yourself win: environment variables (`AWS_REGION`,
+`AWS_DEFAULT_REGION`, `AWS_RETRY_MODE`, `AWS_MAX_ATTEMPTS`), the AWS config file
+of your profile (`~/.aws/config`, `AWS_PROFILE`), and options in the fsspec
+configuration. `CDXT_AWS_DEFAULTS=0` turns the defaults off.
+
 ## Command-line tools
 
 The `cdxt` command line tool has two commands: `index` selects captures

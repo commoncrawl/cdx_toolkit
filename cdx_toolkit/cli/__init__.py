@@ -1,6 +1,7 @@
 from argparse import ArgumentParser
 import sys
 
+from cdx_toolkit.aws import configure_fsspec_s3
 from cdx_toolkit.indexes import UsageError
 from cdx_toolkit.utils import get_version
 
@@ -35,6 +36,7 @@ def main(args=None):
     parser = build_parser()
     cmd = parser.parse_args(args=args)
     set_loglevel(cmd.verbose)
+    configure_fsspec_s3()  # Common Crawl's S3 defaults for s3:// paths, unless configured by the user
     cmdline = ' '.join(['cdxt'] + list(args))
     try:
         cmd.func(cmd, cmdline)

@@ -25,6 +25,8 @@
 	  a full URL in `warc_filename`/`filename` is used as it is (the `warc_url` column is gone)
 	+ fixed `--to` with a day (e.g. `--to 20240410`), which was padded to the end of the month, and February in leap years
 	+ removed the deprecated `cdx_iter` and `cdx_size` scripts
+	+ S3 requests use Common Crawl's recommended AWS settings (us-east-1, adaptive retries, 100000 attempts, virtual
+	  addressing, no payload signing, 2 concurrent requests) unless configured by the user; `CDXT_AWS_DEFAULTS=0` turns them off
 	+ new extras: `athena`, `duckdb`, `hf`, `parquet`; `fsspec` and `aiofiles` are now required
 
 - 0.9.38

@@ -34,6 +34,7 @@ import fsspec
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
 
+from cdx_toolkit.aws import configure_fsspec_s3
 from cdx_toolkit.repackage.sources.csv import CsvSource, RangeJobCsvWriter
 from cdx_toolkit.repackage.warc_filter import WARCFilter
 from cdx_toolkit.repackage.warc_utils import generate_warc_filename
@@ -61,6 +62,7 @@ def _output_filename(prefix_path: str, sequence: int, subprefix: Optional[str] =
 def _init_worker(file_sequence) -> None:
     global _FILE_SEQUENCE
     _FILE_SEQUENCE = file_sequence
+    configure_fsspec_s3()  # a new process does not have the fsspec configuration of the main process
 
 
 def _next_file_sequence(_current: int) -> int:
@@ -126,7 +128,7 @@ def run_multiprocess_repackage(
     writer_subprefix: Optional[str],
     write_paths_as_metadata_records: Optional[List[str]],
     log_every_n: int,
-    aws_region_name: str,
+    aws_region_name: Optional[str] = None,
     max_attempts: int,
     uvloop: bool,
     max_file_size: Optional[int] = 1_000_000_000,
