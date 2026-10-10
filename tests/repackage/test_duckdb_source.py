@@ -46,7 +46,10 @@ def test_without_duckdb():
         list(DuckDbSource(query='SELECT 1').iter_rows())
 
 
-def test_connection_setup_and_hf_filesystem():
+def test_connection_setup_and_hf_filesystem(monkeypatch):
+    for name in ('AWS_REGION', 'AWS_DEFAULT_REGION', 'AWS_MAX_ATTEMPTS', 'CDXT_AWS_DEFAULTS'):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr('cdx_toolkit.aws.user_aws_config', lambda: {})
     con = MagicMock()
     con.execute.return_value.description = [('n',)]
     con.execute.return_value.fetchmany.side_effect = [[(1,)], []]
@@ -63,6 +66,10 @@ def test_connection_setup_and_hf_filesystem():
     assert rows == [{'n': 1}]
     statements = [c.args[0] for c in con.execute.call_args_list]
     assert "SET TimeZone='UTC';" in statements
-    assert 'SET http_retries=8;' in statements and 'SET http_retry_wait_ms=1000;' in statements
+    # Common Crawl's recommended S3 settings (cdx_toolkit.aws) and a timeout of 2 minutes
+    for statement in ("SET s3_region='us-east-1';", "SET s3_url_style='vhost';", 'SET http_retries=99999;',
+                      'SET http_retry_wait_ms=1000;', 'SET http_retry_backoff=1;', 'SET http_timeout=120;'):
+        assert statement in statements
+    assert "CREATE SECRET (TYPE s3, PROVIDER credential_chain, REGION 'us-east-1');" in statements
     con.register_filesystem.assert_called_once_with(hf_fs)
     con.close.assert_called_once()

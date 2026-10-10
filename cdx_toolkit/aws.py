@@ -16,11 +16,14 @@ file of the active profile (~/.aws/config, AWS_PROFILE). CDXT_AWS_DEFAULTS=0 dis
 
 The multipart settings are for whole-file transfers (`aws s3 cp`): cdxt reads WARC records with one
 range request each and reads index files sequentially, so it makes no multipart downloads anyway.
+
+The same settings are used for the Athena client and, as far as it has equivalents, for DuckDB.
 '''
 import functools
 import logging
 import os
-from typing import Optional
+import re
+from typing import List, Optional
 
 
 LOGGER = logging.getLogger(__name__)
@@ -125,3 +128,47 @@ def configure_fsspec_s3() -> None:
     if config_kwargs:
         conf['config_kwargs'] = config_kwargs
     conf.setdefault('max_concurrency', max_concurrent_requests())
+
+
+def _user_value(setting: str) -> Optional[str]:
+    for name in SETTING_ENV_VARS.get(setting, ()):
+        if os.environ.get(name):
+            return os.environ[name]
+    value = user_aws_config().get(setting)
+    return str(value) if value is not None else None
+
+
+def duckdb_settings(region_name: Optional[str] = None) -> List[str]:
+    """SET statements with the defaults for DuckDB's S3 access (httpfs), as far as DuckDB has equivalents.
+
+    Settings the user configured (environment, AWS config file) are used instead of the defaults:
+    - region -> s3_region (an explicit `region_name` wins)
+    - max_attempts -> http_retries (attempts - 1), with a constant wait of 1s between retries, because
+      DuckDB's exponential backoff has no maximum wait
+    - s3 addressing_style -> s3_url_style (virtual: vhost, path: path)
+    There is no equivalent of retry_mode (DuckDB has no adaptive mode) and max_concurrent_requests
+    (only `threads`, which limits all of DuckDB's parallelism)."""
+    if not defaults_enabled():
+        region = region_name or _user_value('region')
+        return [f"SET s3_region='{region}';"] if region and re.fullmatch(r'[a-z0-9-]+', region) else []
+    region = region_name or _user_value('region') or DEFAULT_REGION
+    if not re.fullmatch(r'[a-z0-9-]+', region):
+        raise ValueError(f'invalid AWS region {region!r}')
+    attempts = _user_value('max_attempts')
+    attempts = int(attempts) if attempts and attempts.isdigit() else DEFAULT_MAX_ATTEMPTS
+    url_style = 'path' if (user_s3_setting('addressing_style') or DEFAULT_S3['addressing_style']) == 'path' else 'vhost'
+    return [
+        f"SET s3_region='{region}';",
+        f"SET s3_url_style='{url_style}';",
+        f'SET http_retries={max(attempts - 1, 0)};',
+        'SET http_retry_wait_ms=1000;',
+        'SET http_retry_backoff=1;',
+    ]
+
+
+def aws_region(region_name: Optional[str] = None) -> str:
+    """The region for AWS clients that need a concrete value (explicit, the user's, or the default)."""
+    region = region_name or _user_value('region') or DEFAULT_REGION
+    if not re.fullmatch(r'[a-z0-9-]+', region):
+        raise ValueError(f'invalid AWS region {region!r}')
+    return region

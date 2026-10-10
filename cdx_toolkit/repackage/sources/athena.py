@@ -3,6 +3,7 @@ import logging
 import time
 from typing import Iterator, Iterable, Optional
 
+from cdx_toolkit.aws import botocore_config
 from cdx_toolkit.repackage.data_classes import RangeJob
 from cdx_toolkit.repackage.sources.base import RangeJobSource
 from cdx_toolkit.repackage.sources.sql_base import (
@@ -28,7 +29,7 @@ class AthenaSource(RangeJobSource):
         database: str,
         s3_output_location: str,
         warc_download_prefix: Optional[str],
-        region_name: str = 'us-east-1',
+        region_name: Optional[str] = None,
         max_wait_time: int = 300,
     ):
         self.query = query
@@ -40,13 +41,9 @@ class AthenaSource(RangeJobSource):
 
     def _make_client(self):
         import boto3
-        from botocore.config import Config
 
-        config = Config(
-            region_name=self.region_name,
-            read_timeout=60,
-            retries={'max_attempts': 3, 'mode': 'adaptive'},
-        )
+        # retries: Common Crawl's recommended AWS settings, unless configured by the user (see cdx_toolkit.aws)
+        config = botocore_config(region_name=self.region_name, read_timeout=60)
         return boto3.client('athena', config=config)
 
     def iter_rows(self) -> Iterator[dict]:

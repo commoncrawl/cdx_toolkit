@@ -46,6 +46,12 @@ Settings you configured yourself win: environment variables (`AWS_REGION`,
 of your profile (`~/.aws/config`, `AWS_PROFILE`), and options in the fsspec
 configuration. `CDXT_AWS_DEFAULTS=0` turns the defaults off.
 
+The Athena client uses the same retry settings (its region is part of the
+`athena://` location). DuckDB has no adaptive retry mode and no limit for
+concurrent requests; for S3 it uses the region (`s3_region`), the addressing
+style (`s3_url_style`) and `max_attempts` (`http_retries`, with 1 second between
+retries).
+
 ## Command-line tools
 
 The `cdxt` command line tool has two commands: `index` selects captures

@@ -1,6 +1,7 @@
 import logging
 from typing import Iterator, List, Optional
 
+from cdx_toolkit.aws import aws_region, duckdb_settings
 from cdx_toolkit.repackage.data_classes import RangeJob
 from cdx_toolkit.repackage.sources.base import RangeJobSource
 from cdx_toolkit.repackage.sources.sql_base import (
@@ -39,7 +40,7 @@ class DuckDbSource(RangeJobSource):
     AWS region/credentials come from the environment (the AWS credential chain); the
     public bucket is readable with valid credentials."""
 
-    def __init__(self, *, query: str, warc_download_prefix: Optional[str] = None, region_name: str = 'us-east-1'):
+    def __init__(self, *, query: str, warc_download_prefix: Optional[str] = None, region_name: Optional[str] = None):
         self.query = query
         self.warc_download_prefix = warc_download_prefix
         self.region_name = region_name
@@ -57,21 +58,18 @@ class DuckDbSource(RangeJobSource):
         con = duckdb.connect()
         try:
             con.execute('INSTALL httpfs; LOAD httpfs;')
-            con.execute(f"SET s3_region='{self.region_name}';")
             # CC timestamps are UTC (timestamp literals in queries, timestamps in the results)
             con.execute("SET TimeZone='UTC';")
+            region = aws_region(self.region_name)
             try:
                 # find AWS credentials like boto3 does (env, ~/.aws profiles, SSO, instance roles)
                 con.execute('INSTALL aws; LOAD aws;')
-                con.execute(f"CREATE SECRET (TYPE s3, PROVIDER credential_chain, REGION '{self.region_name}');")
+                con.execute(f"CREATE SECRET (TYPE s3, PROVIDER credential_chain, REGION '{region}');")
             except Exception as e:  # pragma: no cover - no credentials or aws extension unavailable
                 logger.debug('duckdb AWS credential chain not used: %r', e)
-            # Be resilient to transient S3 read timeouts and throttling (503 SlowDown) on large parquet
-            # partitions: up to 8 retries, waiting 1s, 2s, 4s, ... (about 4 minutes in total)
-            for stmt in (
-                'SET http_timeout=120000;', 'SET http_retries=8;', 'SET http_retry_wait_ms=1000;',
-                'SET http_retry_backoff=2;',
-            ):
+            # region, retries and URL style: Common Crawl's recommended S3 settings, unless configured by
+            # the user (see cdx_toolkit.aws); a timeout of 2 minutes for large parquet partitions
+            for stmt in duckdb_settings(self.region_name) + ['SET http_timeout=120;']:
                 try:
                     con.execute(stmt)
                 except Exception as e:  # pragma: no cover - setting unsupported on this duckdb

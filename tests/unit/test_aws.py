@@ -154,3 +154,37 @@ def test_cli_configures_fsspec(no_user_config, monkeypatch, tmp_path):
     captures.write_text('')
     main(['repackage', str(captures), '--prefix', str(tmp_path / 'out')])
     assert fsspec.config.conf['s3']['config_kwargs']['retries']['total_max_attempts'] == 100000
+
+
+def test_duckdb_settings(no_user_config):
+    assert aws.duckdb_settings() == [
+        "SET s3_region='us-east-1';",
+        "SET s3_url_style='vhost';",
+        'SET http_retries=99999;',
+        'SET http_retry_wait_ms=1000;',
+        'SET http_retry_backoff=1;',
+    ]
+    assert aws.duckdb_settings(region_name='eu-west-1')[0] == "SET s3_region='eu-west-1';"
+
+
+def test_duckdb_settings_use_the_user_configuration(no_user_config, monkeypatch):
+    monkeypatch.setenv('AWS_REGION', 'eu-central-1')
+    monkeypatch.setenv('AWS_MAX_ATTEMPTS', '5')
+    with patch.object(aws, 'user_aws_config', return_value={'s3': {'addressing_style': 'path'}}):
+        assert aws.duckdb_settings()[:3] == [
+            "SET s3_region='eu-central-1';", "SET s3_url_style='path';", 'SET http_retries=4;',
+        ]
+    assert aws.aws_region() == 'eu-central-1'
+
+    monkeypatch.setenv('CDXT_AWS_DEFAULTS', '0')
+    assert aws.duckdb_settings() == ["SET s3_region='eu-central-1';"]  # only what the user configured
+    monkeypatch.delenv('AWS_REGION')
+    assert aws.duckdb_settings() == []
+
+
+def test_invalid_region(no_user_config, monkeypatch):
+    monkeypatch.setenv('AWS_REGION', "us-east-1'; DROP")
+    with pytest.raises(ValueError, match='invalid AWS region'):
+        aws.aws_region()
+    with pytest.raises(ValueError, match='invalid AWS region'):
+        aws.duckdb_settings()

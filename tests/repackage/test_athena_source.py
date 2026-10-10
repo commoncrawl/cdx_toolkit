@@ -127,11 +127,16 @@ def test_cost_report_without_statistics(caplog):
     assert 'Athena scanned' not in caplog.text
 
 
-def test_make_client_uses_the_region():
+def test_make_client_uses_the_region(monkeypatch):
     pytest.importorskip('boto3')
+    monkeypatch.delenv('AWS_MAX_ATTEMPTS', raising=False)
+    monkeypatch.delenv('AWS_RETRY_MODE', raising=False)
+    monkeypatch.setattr('cdx_toolkit.aws.user_aws_config', lambda: {})
     source = AthenaSource(query='SELECT 1', database='d', s3_output_location='s3://b/', warc_download_prefix=None,
                           region_name='eu-west-1')
     with patch('boto3.client') as boto3_client:
         source._make_client()
     args, kwargs = boto3_client.call_args
     assert args == ('athena',) and kwargs['config'].region_name == 'eu-west-1'
+    # Common Crawl's recommended retry settings (cdx_toolkit.aws)
+    assert kwargs['config'].retries == {'mode': 'adaptive', 'total_max_attempts': 100000}
