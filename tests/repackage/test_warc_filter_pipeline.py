@@ -20,6 +20,7 @@ from cdx_toolkit.repackage.local_writer import LocalFileWriter
 from cdx_toolkit.repackage.records_source import RecordsSource
 from cdx_toolkit.repackage.warc_filter import WARCFilter
 from tests.fake_warc_server import FakeWarcServer
+from tests.conftest import requires_aioboto3
 
 
 def make_server():
@@ -248,9 +249,9 @@ def mixed_scheme_captures():
             dict(hf, filename='hf://buckets/commoncrawl/commoncrawl/' + hf['filename']), relative]
 
 
+@requires_aioboto3
 @pytest.mark.parametrize('processes', [1, 2])
 def test_full_s3_and_hf_filenames_get_their_readers(tmp_path, processes):
-    pytest.importorskip('aioboto3')
     source = RecordsSource(mixed_scheme_captures(), 'https://data.example.org')
     with patch('aioboto3.Session') as session, \
             patch('cdx_toolkit.repackage.warc_filter.make_hf_reader', fake_make_hf_reader), \
@@ -271,8 +272,8 @@ def test_full_s3_and_hf_filenames_get_their_readers(tmp_path, processes):
         sorted(c['url'] for c in CAPTURES[:3])
 
 
+@requires_aioboto3
 def test_s3_output_with_metadata_records(tmp_path):
-    pytest.importorskip('aioboto3')
     metadata = tmp_path / 'urls.txt'
     metadata.write_text('https://example.com/\n')
     s3 = FakeS3Client()
@@ -315,8 +316,8 @@ def test_s3_reads_check_the_length():
         asyncio.run(job.ranged_get_bytes(1, 0))
 
 
+@requires_aioboto3
 def test_no_s3_client_without_s3(tmp_path):
-    pytest.importorskip('aioboto3')
     with patch('aioboto3.Session') as session, \
             patch('cdx_toolkit.repackage.data_classes.myrequests_get', side_effect=fake_get):
         WARCFilter(source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'),

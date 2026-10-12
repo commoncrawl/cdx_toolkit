@@ -36,6 +36,12 @@ try:
 except ImportError:  # pragma: no cover - exercised in minimal installs
     _HAS_DUCKDB = False
 
+try:
+    import aioboto3  # noqa: F401
+    _HAS_AIOBOTO3 = True
+except ImportError:  # pragma: no cover - exercised in minimal installs
+    _HAS_AIOBOTO3 = False
+
 import functools
 from typing import Dict, Optional
 import requests
@@ -172,6 +178,13 @@ def requires_duckdb(func):
     """Pytest decorator that skips a test if the optional duckdb dependency is missing."""
     return pytest.mark.skipif(
         not _HAS_DUCKDB, reason='duckdb is not installed; install cdx_toolkit[duckdb] to enable DuckDB tests.'
+    )(func)
+
+
+def requires_aioboto3(func):
+    """Pytest decorator that skips a test if the optional aioboto3 dependency is missing (no AWS access needed)."""
+    return pytest.mark.skipif(
+        not _HAS_AIOBOTO3, reason='aioboto3 is not installed; install cdx_toolkit[s3] to enable these tests.'
     )(func)
 
 

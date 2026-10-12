@@ -4,6 +4,7 @@ from unittest.mock import patch
 import pytest
 
 from cdx_toolkit import aws
+from tests.conftest import requires_aioboto3
 
 FULL_DEFAULTS = {
     'region_name': 'us-east-1',
@@ -127,8 +128,8 @@ def test_s3fs_uses_the_defaults(no_user_config, monkeypatch):
     assert fs.max_concurrency == 2
 
 
+@requires_aioboto3
 def test_warc_fetcher_s3_clients(no_user_config):
-    pytest.importorskip('aioboto3')
     from cdx_toolkit.repackage.records_source import RecordsSource
     from cdx_toolkit.repackage.warc_filter import WARCFilter
 
