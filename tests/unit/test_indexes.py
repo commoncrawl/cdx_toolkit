@@ -86,10 +86,41 @@ def test_cdx_api_url_patterns_and_limit():
 
     calls = fetcher.return_value.iter.call_args_list
     assert len(calls) == 2  # the limit was reached before the domain query
+    # with several selectors, the limit is applied after removing duplicates, not by the server
     assert calls[0].args == ('example.com/*',)
-    assert calls[0].kwargs == {'limit': 3, 'from_ts': '2020', 'filter': ['=status:200']}
+    assert calls[0].kwargs == {'from_ts': '2020', 'filter': ['=status:200']}
     assert calls[1].args == ('www.example.org',)
-    assert calls[1].kwargs == {'limit': 1, 'from_ts': '2020', 'filter': ['=status:200'], 'matchType': 'host'}
+    assert calls[1].kwargs == {'from_ts': '2020', 'filter': ['=status:200'], 'matchType': 'host'}
+
+
+def test_cdx_api_single_selector_limit_is_sent_to_the_server():
+    with patch('cdx_toolkit.CDXFetcher') as fetcher:
+        fetcher.return_value.iter.return_value = iter([_capture('http://example.com/a')])
+        list(CdxApiBackend('cc').iter_records(IndexQuery(urls=['example.com/*'], limit=3)))
+    assert fetcher.return_value.iter.call_args.kwargs == {'limit': 3}
+
+
+def test_cdx_api_overlapping_selectors_return_each_capture_once():
+    def capture(url, timestamp, offset):
+        return {'url': url, 'timestamp': timestamp, 'filename': 'a.warc.gz', 'offset': offset}
+
+    shared = capture('http://example.com/a', '20240101000000', '1')
+    again = capture('http://example.com/a', '20240201000000', '2')  # same URL, another capture
+    other_crawl = capture('http://example.com/a', '20240101000000', '3')  # same URL and time, another WARC record
+    results = {
+        'example.com/*': [shared, again],
+        'example.com': [dict(shared), other_crawl, capture('http://www.example.com/', '20240101000000', '4')],
+    }
+    query = IndexQuery(urls=['example.com/*'], domains=['example.com'])
+    with patch('cdx_toolkit.CDXFetcher') as fetcher:
+        fetcher.return_value.iter.side_effect = lambda url, **params: iter(results[url])
+        records = list(CdxApiBackend('cc').iter_records(query))
+        assert [r['offset'] for r in records] == ['1', '2', '3', '4']
+
+        # the limit counts distinct captures
+        query.limit = 3
+        records = list(CdxApiBackend('cc').iter_records(query))
+        assert [r['offset'] for r in records] == ['1', '2', '3']
 
 
 def test_cdx_api_closest_uses_get_and_crawl_is_normalized():

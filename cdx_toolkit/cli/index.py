@@ -136,8 +136,8 @@ def add_parser(subparsers):
     )
     output.add_argument(
         '--count', action='store_true',
-        help=('only print the number of captures (CDX API: cheap estimate based on the number of index pages; '
-              'SQL: exact count)'),
+        help=('only print the number of captures (CDX API: cheap estimate based on the number of index pages, '
+              'overlapping selectors are counted more than once; SQL: exact count)'),
     )
     output.add_argument(
         '--dry-run', action='store_true',

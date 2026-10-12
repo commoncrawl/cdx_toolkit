@@ -33,13 +33,23 @@ class CdxApiBackend(IndexBackend):
             raise UsageError('--crawl can only be used with the Common Crawl index (cc)')
 
     def iter_records(self, query: IndexQuery) -> Iterator[Mapping]:
+        """The captures of all selectors; a capture selected by more than one is only returned once.
+
+        With several selectors, --limit is applied here (after removing the duplicates), not by the server."""
         cdx = self._fetcher(query)
+        patterns = query.url_patterns()
         remaining = query.limit
-        for url, match_type in query.url_patterns():
-            params = self._params(query, match_type, limit=remaining)
+        seen = set() if len(patterns) > 1 else None
+        for url, match_type in patterns:
+            params = self._params(query, match_type, limit=remaining if seen is None else None)
             # closest only makes sense for a single (non-paged) query
             captures = cdx.get(url, **params) if query.closest else cdx.iter(url, **params)
             for capture in captures:
+                if seen is not None:
+                    identity = capture_identity(capture)
+                    if identity in seen:
+                        continue
+                    seen.add(identity)
                 yield capture
                 if remaining is not None:
                     remaining -= 1
@@ -47,6 +57,7 @@ class CdxApiBackend(IndexBackend):
                         return
 
     def count(self, query: IndexQuery) -> int:
+        """Estimate from the number of index pages; overlapping selectors are counted more than once."""
         cdx = self._fetcher(query)
         return sum(
             cdx.get_size_estimate(url, **self._params(query, match_type, limit=query.limit))
@@ -88,3 +99,9 @@ class CdxApiBackend(IndexBackend):
         if match_type:
             params['matchType'] = match_type
         return params
+
+
+def capture_identity(capture: Mapping) -> tuple:
+    """What distinguishes captures: the same URL can be captured at the same time more than once (e.g. in
+    different crawls), so the WARC location is part of the identity."""
+    return tuple(capture.get(field) for field in ('urlkey', 'url', 'timestamp', 'filename', 'offset', 'digest'))
