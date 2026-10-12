@@ -136,8 +136,8 @@ def add_parser(subparsers):
     )
     output.add_argument(
         '--count', action='store_true',
-        help=('only print the number of captures (CDX API: cheap estimate based on the number of index pages, '
-              'overlapping selectors are counted more than once; SQL: exact count)'),
+        help=('only print the number of captures, at most --limit (CDX API: cheap estimate based on the number of '
+              'index pages, overlapping selectors are counted more than once; CDX files and SQL: exact count)'),
     )
     output.add_argument(
         '--dry-run', action='store_true',
@@ -243,6 +243,8 @@ def run(args: Namespace, cmdline: str):
         return
 
     if args.count:
+        if query.url_fgrep or query.url_fgrepv:
+            raise UsageError('--count cannot be used with --url-fgrep or --url-fgrepv')
         count = backend.count(query)
         with open_text(args.output, 'w') as fh:
             fh.write(f'{count}\n')

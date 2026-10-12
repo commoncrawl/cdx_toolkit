@@ -69,3 +69,12 @@ def test_selectors_match_the_same_captures_on_every_backend(indexes, capsys, sel
     for index in indexes:
         main(['index', index, '--yes', '--output-format', 'csv', '--fields', 'url'] + selector)
         assert sorted(capsys.readouterr().out.splitlines()[1:]) == expected, index
+
+
+@requires_duckdb
+def test_count_is_capped_by_the_limit_on_every_backend(indexes, capsys):
+    for index in indexes:
+        for limit, expected in ((None, '5'), ('2', '2'), ('9', '5')):
+            limit_args = ['--limit', limit] if limit else []
+            main(['index', index, '--yes', '--domain', 'example.com', '--count'] + limit_args)
+            assert capsys.readouterr().out.strip() == expected, (index, limit)

@@ -57,12 +57,14 @@ class CdxApiBackend(IndexBackend):
                         return
 
     def count(self, query: IndexQuery) -> int:
-        """Estimate from the number of index pages; overlapping selectors are counted more than once."""
+        """Estimate from the number of index pages, at most --limit; overlapping selectors are counted more
+        than once."""
         cdx = self._fetcher(query)
-        return sum(
+        count = sum(
             cdx.get_size_estimate(url, **self._params(query, match_type, limit=query.limit))
             for url, match_type in query.url_patterns()
         )
+        return min(count, query.limit) if query.limit else count
 
     def explain(self, query: IndexQuery) -> str:
         lines = []

@@ -139,12 +139,14 @@ def test_cdx_api_count():
     query = IndexQuery(urls=['example.com/*'], domains=['example.org'], limit=10)
 
     with patch('cdx_toolkit.CDXFetcher') as fetcher:
-        fetcher.return_value.get_size_estimate.side_effect = [3000, 1500]
-        assert CdxApiBackend('ia').count(query) == 4500
+        fetcher.return_value.get_size_estimate.side_effect = [3000, 1500, 3000, 1500]
+        assert CdxApiBackend('ia').count(query) == 10  # capped by the limit
+        calls = fetcher.return_value.get_size_estimate.call_args_list
+        assert calls[1].args == ('example.org',)
+        assert calls[1].kwargs == {'limit': 10, 'matchType': 'domain'}
 
-    calls = fetcher.return_value.get_size_estimate.call_args_list
-    assert calls[1].args == ('example.org',)
-    assert calls[1].kwargs == {'limit': 10, 'matchType': 'domain'}
+        query.limit = None
+        assert CdxApiBackend('ia').count(query) == 4500
 
 
 def test_iter_index_records_url_fgrep():

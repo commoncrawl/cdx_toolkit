@@ -25,6 +25,8 @@ class IndexBackend(ABC):
         if unsupported:
             options = ', '.join(field_flag(option) for option in unsupported)
             raise UsageError(f'{options} cannot be used with the {self.name} index')
+        if query.limit is not None and query.limit < 1:
+            raise UsageError(f'--limit must be at least 1, not {query.limit}')
 
     @abstractmethod
     def iter_records(self, query: IndexQuery) -> Iterator[Mapping]:
@@ -35,7 +37,8 @@ class IndexBackend(ABC):
 
     @abstractmethod
     def count(self, query: IndexQuery) -> int:
-        """Cheap (possibly estimated) number of captures matching the query."""
+        """Cheap (possibly estimated) number of captures matching the query, at most --limit (without the
+        client-side --url-fgrep/--url-fgrepv, which cannot be combined with --count)."""
         raise NotImplementedError  # pragma: no cover
 
     @abstractmethod

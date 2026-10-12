@@ -65,7 +65,9 @@ class CaptureFilter:
     url_fgrepv: Optional[str] = None
 
     @classmethod
-    def from_query(cls, query: IndexQuery) -> 'CaptureFilter':
+    def from_query(cls, query: IndexQuery, url_filters: bool = False) -> 'CaptureFilter':
+        """The selection of the query; --url-fgrep/--url-fgrepv only with `url_filters` (one output per file:
+        without --limit, they can be applied while reading; otherwise they are applied after the limit)."""
         prefixes, exact = [], []
         patterns = list(query.urls)
         if query.url_file:
@@ -90,8 +92,8 @@ class CaptureFilter:
             select_all=not (query.urls or query.url_file or query.hostnames or query.domains),
             from_ts=pad_timestamp(query.from_ts) if query.from_ts else None,
             to=pad_timestamp_up(query.to) if query.to else None,
-            url_fgrep=query.url_fgrep,
-            url_fgrepv=query.url_fgrepv,
+            url_fgrep=query.url_fgrep if url_filters else None,
+            url_fgrepv=query.url_fgrepv if url_filters else None,
         )
 
     def matcher(self) -> 'LineMatcher':
@@ -216,9 +218,8 @@ class CdxFilesBackend(IndexBackend):
                         return
 
     def count(self, query: IndexQuery) -> int:
-        """Exact number of selected captures (reads all files)."""
-        matcher = CaptureFilter.from_query(query).matcher()
-        return sum(1 for path, _ in self.files() for _ in iter_matching_lines(path, matcher))
+        """Exact number of selected captures, at most --limit (reads all files, or until the limit)."""
+        return sum(1 for _ in self.iter_records(query))
 
     def explain(self, query: IndexQuery) -> str:
         capture_filter = CaptureFilter.from_query(query)
@@ -238,7 +239,7 @@ class CdxFilesBackend(IndexBackend):
         Returns the number of output files and captures; no file is written without matches."""
         if query.limit:
             raise UsageError('--limit cannot be used when writing one output per CDX file')
-        capture_filter = CaptureFilter.from_query(query)
+        capture_filter = CaptureFilter.from_query(query, url_filters=True)
         join = (lambda rel: output_base.rstrip('/') + '/' + rel) if '://' in output_base else \
             (lambda rel: os.path.join(output_base, *rel.split('/')))
         tasks = [(path, join(rel), capture_filter) for path, rel in self.files()]

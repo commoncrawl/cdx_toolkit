@@ -5,7 +5,7 @@ import shutil
 import pytest
 
 from cdx_toolkit.cli import main
-from cdx_toolkit.indexes import IndexQuery, UsageError
+from cdx_toolkit.indexes import IndexQuery, UsageError, iter_index_records
 from cdx_toolkit.indexes.cdx_files import (
     CdxFilesBackend, domain_entry_to_surts, load_url_patterns, url_pattern_to_surts,
 )
@@ -61,10 +61,25 @@ def test_time_range_fgrep_and_limit():
     query = IndexQuery(domains=['missiondefrance.fr'], from_ts='20240716', to='20240716')
     assert backend.count(query) == count_lines('fr,missiondefrance,', day='20240716')
 
-    records = list(backend.iter_records(IndexQuery(domains=['mnhn.fr'], url_fgrep='/taxonomy/', limit=5)))
-    assert len(records) == 5
+    records = list(iter_index_records(backend, IndexQuery(domains=['mnhn.fr'], url_fgrep='/taxonomy/', limit=5)))
+    assert 0 < len(records) <= 5
     assert all('/taxonomy/' in r['url'] and r['urlkey'].startswith('fr,mnhn,biodiv)') for r in records)
     assert set(records[0]) >= {'urlkey', 'timestamp', 'url', 'filename', 'offset', 'length'}
+
+
+def test_limit_applies_before_the_url_filters(tmp_path, capsys):
+    path = tmp_path / 'index.cdx'
+    path.write_text(''.join(
+        f'com,example)/{name} 20240101000000 {json.dumps({"url": f"https://example.com/{name}"})}\n'
+        for name in ('drop', 'keep')
+    ))
+    backend = CdxFilesBackend(str(path))
+    query = IndexQuery(domains=['example.com'], limit=1, url_fgrep='keep')
+    assert list(iter_index_records(backend, query)) == []
+    query.url_fgrep, query.url_fgrepv = None, 'drop'
+    assert list(iter_index_records(backend, query)) == []
+    assert backend.count(IndexQuery(domains=['example.com'], limit=1)) == 1
+    assert backend.count(IndexQuery(domains=['example.com'])) == 2
 
 
 def test_url_file_formats(tmp_path):
@@ -126,6 +141,9 @@ def test_cli_combined_output_and_errors(tmp_path, capsys):
         (['--domain', 'mnhn.fr', '-o', str(tmp_path / 'out'), '--limit', '1'], '--limit cannot be used'),
         (['--domain', 'mnhn.fr', '-o', str(tmp_path / 'out'), '--fields', 'url'], '--fields cannot be used'),
         (['--url-column', 'x', '--domain', 'mnhn.fr'], '--url-column and --url-file-type need --url-file'),
+        (['--domain', 'mnhn.fr', '--limit', '0'], '--limit must be at least 1'),
+        (['--domain', 'mnhn.fr', '--limit', '-1'], '--limit must be at least 1'),
+        (['--domain', 'mnhn.fr', '--count', '--url-fgrep', 'x'], '--count cannot be used with --url-fgrep'),
     ]:
         with pytest.raises(SystemExit):
             main(['index', str(CDX_PATH)] + args)
