@@ -132,11 +132,16 @@ def requires_live_aws(func):
         return pytest.mark.skip(reason='needs AWS; set CDXT_LIVE_TESTS=1 to run it')(func)
     if not _HAS_BOTOCORE or not _HAS_FSSPEC:
         return pytest.mark.skip(reason='S3 dependencies are not installed; install cdx_toolkit[s3]')(func)
-    return pytest.mark.skipif(DISABLE_S3_TESTS, reason='AWS S3 access is disabled via environment variable.')(
-        pytest.mark.skipif(
-            not check_aws_s3_access(), reason='AWS S3 access not available (no credentials or permissions)'
-        )(func)
-    )
+    return pytest.mark.usefixtures('live_aws_s3_access')(func)
+
+
+@pytest.fixture
+def live_aws_s3_access():
+    """Skip the test without AWS S3 access; checked when a test needs it (not when the tests are collected)."""
+    if DISABLE_S3_TESTS:
+        pytest.skip('AWS S3 access is disabled via environment variable.')
+    if not check_aws_s3_access():
+        pytest.skip('AWS S3 access not available (no credentials or permissions)')
 
 
 def requires_aws_s3(func):
@@ -200,11 +205,16 @@ def requires_aws_athena(func):
             True, reason='S3 dependencies are not installed; install cdx_toolkit[s3] to enable Athena tests.'
         )(func)
 
-    return pytest.mark.skipif(DISABLE_ATHENA_TESTS, reason='AWS Athena access is disabled via environment variable.')(
-        pytest.mark.skipif(
-            not check_aws_athena_access(), reason='AWS Athena access not available (no credentials or permissions)'
-        )(func)
-    )
+    return pytest.mark.usefixtures('live_aws_athena_access')(func)
+
+
+@pytest.fixture
+def live_aws_athena_access():
+    """Skip the test without AWS Athena access; checked when a test needs it (not when the tests are collected)."""
+    if DISABLE_ATHENA_TESTS:
+        pytest.skip('AWS Athena access is disabled via environment variable.')
+    if not check_aws_athena_access():
+        pytest.skip('AWS Athena access not available (no credentials or permissions)')
 
 
 def requires_duckdb(func):
