@@ -7,12 +7,15 @@ import gzip
 import itertools
 import os
 import threading
+import time
 from unittest.mock import Mock, patch
 
 import fsspec
 import pytest
+import requests
 from warcio.archiveiterator import ArchiveIterator
 
+from cdx_toolkit import myrequests
 from cdx_toolkit.repackage import multiprocess
 from cdx_toolkit.repackage.data_classes import RangeJob, RepackageResult
 from cdx_toolkit.repackage.http_range import RangeError
@@ -198,6 +201,65 @@ def test_cancellation_with_a_full_queue_and_a_blocked_reader(tmp_path):
     assert not thread.is_alive(), 'shutdown did not finish'
     assert source_done.wait(timeout=1), 'the producer thread is still waiting'
     assert glob.glob(str(tmp_path / 'out-*')) == []
+
+
+def cancel_http_read_after_the_first_request(job, request_started):
+    """Cancel the read once the first request has started; returns how long asyncio.run() took after cancelling."""
+    async def main():
+        task = asyncio.create_task(job.ranged_get_bytes(1, 0))
+        while not request_started.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return time.monotonic()
+
+    cancelled_at = asyncio.run(main())
+    return time.monotonic() - cancelled_at
+
+
+def test_cancelled_http_read_does_not_wait_for_the_request(monkeypatch):
+    """asyncio.run() returns while the (uninterruptible) request is still blocked."""
+    monkeypatch.setitem(myrequests.retry_info, 'blocked.example.org', {'next_fetch': 0, 'minimum_interval': 0})
+    started, release = threading.Event(), threading.Event()
+
+    def blocking_get(*args, **kwargs):
+        started.set()
+        release.wait(timeout=10)
+        raise requests.exceptions.ConnectionError('released')
+
+    try:
+        with patch('cdx_toolkit.myrequests.requests.get', side_effect=blocking_get):
+            job = RangeJob(url='https://blocked.example.org/a.warc.gz', offset=0, length=1)
+            assert cancel_http_read_after_the_first_request(job, started) < 1
+            assert not release.is_set()
+    finally:
+        release.set()
+
+
+def test_cancelled_http_read_stops_retrying(monkeypatch):
+    """The thread does not keep retrying (here: waiting 60s after a connection error) after the cancellation."""
+    monkeypatch.setitem(myrequests.retry_info, 'down.example.org', {'next_fetch': 0, 'minimum_interval': 0})
+    started, finished = threading.Event(), threading.Event()
+    requests_made = []
+
+    def failing_get(*args, **kwargs):
+        requests_made.append(args)
+        started.set()
+        raise requests.exceptions.ConnectionError('down')
+
+    def get(*args, **kwargs):
+        try:
+            return myrequests.myrequests_get(*args, **kwargs)
+        finally:
+            finished.set()
+
+    with patch('cdx_toolkit.myrequests.requests.get', side_effect=failing_get), \
+            patch('cdx_toolkit.repackage.data_classes.myrequests_get', side_effect=get):
+        job = RangeJob(url='https://down.example.org/a.warc.gz', offset=0, length=1)
+        cancel_http_read_after_the_first_request(job, started)
+        assert finished.wait(timeout=2), 'the request thread is still waiting to retry'
+    assert len(requests_made) == 1
 
 
 def test_hf_reads_use_the_hf_reader(tmp_path):

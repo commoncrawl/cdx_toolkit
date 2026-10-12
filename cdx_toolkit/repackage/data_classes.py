@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import time
 from dataclasses import dataclass
 
@@ -8,6 +9,35 @@ from typing import Optional, Tuple
 
 from cdx_toolkit.myrequests import myrequests_get
 from cdx_toolkit.repackage.http_range import RangeError, check_range_response
+
+
+async def run_in_daemon_thread(func, *args, **kwargs):
+    """Run a blocking function in a daemon thread of its own (like asyncio.to_thread).
+
+    Unlike asyncio.to_thread, nothing waits for a cancelled call: not the cancelled task, not asyncio.run() (which
+    waits for the threads of the default executor) and not the interpreter at exit."""
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+
+    def set_result(result, exception):
+        if not future.cancelled():
+            if exception is not None:
+                future.set_exception(exception)
+            else:
+                future.set_result(result)
+
+    def run():
+        try:
+            result, exception = func(*args, **kwargs), None
+        except BaseException as e:
+            result, exception = None, e
+        try:
+            loop.call_soon_threadsafe(set_result, result, exception)
+        except RuntimeError:
+            pass  # the event loop is closed: nobody waits for the result anymore
+
+    threading.Thread(target=run, daemon=True).start()
+    return await future
 
 
 @dataclass
@@ -134,8 +164,13 @@ class RangeJob:
             headers = {'Range': 'bytes={}-{}'.format(offset, end)}
 
             # in a thread, so that the event loop (other readers, the writer) is not blocked; myrequests_get keeps
-            # the minimum interval between requests to a host across threads
-            resp = await asyncio.to_thread(myrequests_get, self.url, headers=headers)
+            # the minimum interval between requests to a host across threads. If this task is cancelled, the
+            # thread stops at its next wait (before a retry), and nothing waits for it.
+            stop = threading.Event()
+            try:
+                resp = await run_in_daemon_thread(myrequests_get, self.url, headers=headers, stop=stop)
+            finally:
+                stop.set()
             check_range_response(
                 resp.status_code, resp.headers.get('Content-Range'), len(resp.content), offset, length, self.url
             )

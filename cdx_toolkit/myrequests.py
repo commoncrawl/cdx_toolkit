@@ -78,6 +78,18 @@ def reserve_fetch_time(hostname: str, now: float) -> float:
     return fetch_time
 
 
+class RequestCancelled(Exception):
+    """The request was cancelled with its `stop` event (while waiting before the request or a retry)."""
+
+
+def _sleep(seconds: float, stop: Optional[threading.Event]) -> None:
+    """Sleep, or raise RequestCancelled as soon as `stop` is set."""
+    if stop is None:
+        time.sleep(seconds)
+    elif stop.wait(seconds):
+        raise RequestCancelled()
+
+
 def finish_fetch(hostname: str) -> None:
     """After a request: the next one may start the minimum interval from now (or later, if reserved)."""
     with _retry_lock:
@@ -95,7 +107,12 @@ def myrequests_get(
     raise_error_after_n_errors: Optional[int] = None,
     raise_warning_after_n_errors: Optional[int] = None,
     retry_max_sec: int = 60,
+    stop: Optional[threading.Event] = None,
 ):
+    """GET with the minimum interval between requests to a host, and retries.
+
+    With `stop`, the waits (before the request, between retries) end with RequestCancelled once it is set; a
+    request in progress ends with its timeout."""
     t = time.time()
 
     if raise_error_after_n_errors is None:
@@ -112,7 +129,7 @@ def myrequests_get(
         dt = fetch_time - t
         if dt > 3.1:
             LOGGER.debug('sleeping for {:.3f}s before next fetch'.format(dt))
-        time.sleep(dt)
+        _sleep(dt, stop)
 
     if params:
         if 'from_ts' in params:
@@ -133,6 +150,8 @@ def myrequests_get(
     retries = 0
     connect_errors = 0
     while retry:
+        if stop is not None and stop.is_set():
+            raise RequestCancelled()
         try:
             LOGGER.debug('getting %s %r', url, params)
             resp = requests.get(url, params=params, headers=headers, timeout=(30.0, 30.0), allow_redirects=False)
@@ -155,7 +174,7 @@ def myrequests_get(
                 LOGGER.log(level, 'retrying after %.2fs for %d', retry_sec, resp.status_code)
                 if resp.text:
                     LOGGER.log(level, 'response body is %s', resp.text)
-                time.sleep(retry_sec)
+                _sleep(retry_sec, stop)
                 retry_sec = min(retry_sec * 2, retry_max_sec)
                 continue
             if resp.status_code in {400, 404}:  # pragma: no cover
@@ -187,7 +206,7 @@ def myrequests_get(
             if connect_errors > raise_warning_after_n_errors:
                 LOGGER.warning(string)
             LOGGER.info('retrying after {:.2f}s for '.format(retry_max_sec) + str(e))
-            time.sleep(retry_max_sec)  # notice the extra-long sleep
+            _sleep(retry_max_sec, stop)  # notice the extra-long sleep
             retry_sec = min(retry_sec * 2, retry_max_sec)
         except requests.exceptions.RequestException as e:  # pragma: no cover
             LOGGER.warning('something unexpected happened, giving up after %s', str(e))

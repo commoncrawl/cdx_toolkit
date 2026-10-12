@@ -72,7 +72,7 @@ def test_repackage_fetches_by_warc_location(tmp_path):
         main(['repackage', captures, '--prefix', str(tmp_path / 'out'), '--warc-download-prefix', 'https://x.org/'])
 
     assert get.call_args.args == ('https://x.org/crawl-data/x.warc.gz',)
-    assert get.call_args.kwargs == {'headers': {'Range': f'bytes=10-{9 + len(RECORD)}'}}
+    assert get.call_args.kwargs['headers'] == {'Range': f'bytes=10-{9 + len(RECORD)}'}
 
     with open(tmp_path / 'out-001.warc.gz', 'rb') as f:
         records = list(ArchiveIterator(f))
