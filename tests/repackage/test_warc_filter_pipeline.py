@@ -2,6 +2,7 @@
 import asyncio
 import contextlib
 import glob
+import io
 import gzip
 import itertools
 import os
@@ -14,6 +15,7 @@ from warcio.archiveiterator import ArchiveIterator
 
 from cdx_toolkit.repackage import multiprocess
 from cdx_toolkit.repackage.data_classes import RangeJob, RepackageResult
+from cdx_toolkit.repackage.http_range import RangeError
 from cdx_toolkit.repackage.local_writer import LocalFileWriter
 from cdx_toolkit.repackage.records_source import RecordsSource
 from cdx_toolkit.repackage.warc_filter import WARCFilter
@@ -196,7 +198,22 @@ def test_uvloop(monkeypatch, caplog, uvloop_installed):
 
 
 class FakeS3Client:
-    """aioboto3 S3 client stand-in that serves the files of SERVER."""
+    """aioboto3 S3 client stand-in that serves the files of SERVER and stores multipart uploads."""
+
+    def __init__(self):
+        self.parts = {}
+        self.objects = {}
+
+    async def create_multipart_upload(self, Bucket, Key):
+        return {'UploadId': Key}
+
+    async def upload_part(self, Key, PartNumber, Body, **kwargs):
+        self.parts[(Key, PartNumber)] = Body
+        return {'ETag': str(PartNumber)}
+
+    async def complete_multipart_upload(self, Bucket, Key, MultipartUpload, **kwargs):
+        parts = [self.parts[(Key, part['PartNumber'])] for part in MultipartUpload['Parts']]
+        self.objects[f's3://{Bucket}/{Key}'] = b''.join(parts)
 
     async def __aenter__(self):
         return self
@@ -252,6 +269,50 @@ def test_full_s3_and_hf_filenames_get_their_readers(tmp_path, processes):
     records = response_records(glob.glob(str(tmp_path / 'out-*.warc.gz')))
     assert sorted(r.rec_headers.get_header('WARC-Target-URI') for r in records) == \
         sorted(c['url'] for c in CAPTURES[:3])
+
+
+def test_s3_output_with_metadata_records(tmp_path):
+    pytest.importorskip('aioboto3')
+    metadata = tmp_path / 'urls.txt'
+    metadata.write_text('https://example.com/\n')
+    s3 = FakeS3Client()
+    with patch('aioboto3.Session') as session, \
+            patch('cdx_toolkit.repackage.data_classes.myrequests_get', side_effect=fake_get):
+        session.return_value.client.return_value = s3
+        result = WARCFilter(source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path='s3://bucket/out',
+                            writer_info={}, write_paths_as_metadata_records=[str(metadata)]).filter()
+    assert result.written == 4
+    data = s3.objects['s3://bucket/out-001.warc.gz']
+    records = [(r.rec_type, r.content_stream().read()) for r in ArchiveIterator(io.BytesIO(data))]
+    assert [rec_type for rec_type, _ in records] == ['warcinfo', 'metadata'] + ['resource'] * 4
+    assert records[1][1] == b'https://example.com/\n'
+
+
+def test_failing_metadata_record_removes_the_file(tmp_path):
+    wf = WARCFilter(source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'),
+                    writer_info={}, write_paths_as_metadata_records=[str(tmp_path / 'missing.txt')])
+    with patch('cdx_toolkit.repackage.data_classes.myrequests_get', side_effect=fake_get), \
+            pytest.raises(FileNotFoundError):
+        wf.filter()
+    assert glob.glob(str(tmp_path / 'out-*')) == []
+
+
+def test_s3_reads_check_the_length():
+    class Readers:
+        async def s3(self):
+            class Client:
+                async def get_object(self, **kwargs):
+                    class Body:
+                        async def read(self):
+                            return b'short'
+                    return {'Body': Body()}
+            return Client()
+
+    job = RangeJob(url='s3://commoncrawl/crawl-data/a.warc.gz', offset=0, length=10)
+    with pytest.raises(RangeError, match='requested 10 bytes'):
+        asyncio.run(job.ranged_get_bytes(1, 0, readers=Readers()))
+    with pytest.raises(ValueError, match='requires readers'):
+        asyncio.run(job.ranged_get_bytes(1, 0))
 
 
 def test_no_s3_client_without_s3(tmp_path):

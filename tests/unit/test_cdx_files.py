@@ -209,3 +209,18 @@ def test_no_globs_over_http(capsys):
         with pytest.raises(SystemExit):
             main(command)
         assert 'globs do not work with http(s) URLs' in capsys.readouterr().err
+
+
+def test_one_output_per_cdx_file_with_url_filters(tmp_path):
+    out = tmp_path / 'out'
+    main(['index', str(CDX_PATH), '--domain', 'mnhn.fr', '--url-fgrep', '/taxonomy/', '--url-fgrepv', '/term/1',
+          '-o', str(out)])
+    with gzip.open(out / CDX_PATH.name, 'rt') as f:
+        lines = f.read().splitlines()
+
+    def url(line):
+        return json.loads(line.split(' ', 2)[2])['url']
+
+    expected = [line for line in LINES if line.startswith('fr,mnhn,') and '/taxonomy/' in url(line)]
+    assert lines == [line for line in expected if '/term/1' not in url(line)]
+    assert lines

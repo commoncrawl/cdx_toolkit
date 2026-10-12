@@ -79,3 +79,14 @@ def test_escape_sql_literal_rejects_injection(bad):
 def test_build_query_rejects_injection_hostname():
     with pytest.raises(ValueError):
         build_sql('ccindex', ["example.com'; DROP TABLE ccindex; --"])
+
+
+def test_resolve_crawl_names():
+    from unittest.mock import patch
+
+    from cdx_toolkit.indexes.sql_query import resolve_crawl_names
+
+    endpoints = [f'https://index.commoncrawl.org/CC-MAIN-2024-{week}-index' for week in (30, 33, 38)]
+    with patch('cdx_toolkit.indexes.sql_query.get_cc_endpoints', return_value=endpoints):
+        assert resolve_crawl_names('2') == ['CC-MAIN-2024-33', 'CC-MAIN-2024-38']
+        assert resolve_crawl_names('CC-MAIN-2024-30') == ['CC-MAIN-2024-30']

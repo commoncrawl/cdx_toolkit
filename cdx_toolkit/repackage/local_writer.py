@@ -38,12 +38,10 @@ class LocalFileWriter:
         try:
             if self.buffer:
                 await self._flush()
+        finally:
             if self.file_handle:
                 await self.file_handle.close()
-        except Exception:
-            if self.file_handle:
-                await self.file_handle.close()
-            raise
+                self.file_handle = None
 
     async def abort(self):
         """Close and remove the (incomplete) file."""

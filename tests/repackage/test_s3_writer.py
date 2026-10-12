@@ -1,242 +1,9 @@
-import pytest
-
 import asyncio
 from unittest.mock import AsyncMock
-from unittest.mock import patch
 
-from cdx_toolkit.repackage.s3_writer import mpu_abort
+import pytest
 
-
-from cdx_toolkit.repackage.s3_writer import S3ShardWriter
-
-
-def test_shard_writer_start():
-    """Test ShardWriter start method."""
-
-    async def run_test():
-        with patch('cdx_toolkit.repackage.s3_writer.mpu_create') as mock_mpu_create:
-            mock_mpu_create.return_value = 'test-upload-id'
-
-            mock_s3 = AsyncMock()
-
-            writer = S3ShardWriter(
-                s3_client=mock_s3,
-                shard_key='test.warc.gz',
-                dest_bucket='test-bucket',
-                content_type='application/gzip',
-                min_part_size=1024,
-                max_attempts=3,
-                base_backoff_seconds=0.1,
-            )
-
-            await writer.start()
-
-            assert writer.upload_id == 'test-upload-id'
-            mock_mpu_create.assert_called_once_with(
-                mock_s3,
-                'test-bucket',
-                'test.warc.gz',
-                max_attempts=3,
-                base_backoff_seconds=0.1,
-            )
-
-    asyncio.run(run_test())
-
-
-def test_shard_writer_write_small_data():
-    """Test ShardWriter write method with small data that stays in buffer."""
-
-    async def run_test():
-        mock_s3 = AsyncMock()
-
-        writer = S3ShardWriter(
-            s3_client=mock_s3,
-            shard_key='test.warc.gz',
-            dest_bucket='test-bucket',
-            content_type='application/gzip',
-            min_part_size=1024,  # 1 KiB
-            max_attempts=3,
-            base_backoff_seconds=0.1,
-        )
-
-        small_data = b'small test data'
-
-        await writer.write(small_data)
-
-        # Data should be in buffer, no parts uploaded yet
-        assert len(writer.buffer) == len(small_data)
-        assert bytes(writer.buffer) == small_data
-        assert writer.part_number == 1
-        assert len(writer.parts) == 0
-
-    asyncio.run(run_test())
-
-
-def test_shard_writer_write_large_data():
-    """Test ShardWriter write method with large data that triggers part uploads."""
-
-    async def run_test():
-        with patch('cdx_toolkit.repackage.s3_writer.mpu_upload_part') as mock_upload_part:
-            mock_upload_part.return_value = 'test-etag-1'
-
-            mock_s3 = AsyncMock()
-
-            writer = S3ShardWriter(
-                s3_client=mock_s3,
-                shard_key='test.warc.gz',
-                dest_bucket='test-bucket',
-                content_type='application/gzip',
-                min_part_size=100,  # 100 bytes
-                max_attempts=3,
-                base_backoff_seconds=0.1,
-            )
-            writer.upload_id = 'test-upload-id'
-
-            large_data = b'x' * 250  # 250 bytes, should create 2 parts
-
-            await writer.write(large_data)
-
-            # Should have uploaded 2 parts (100 bytes each) with 50 bytes remaining in buffer
-            assert mock_upload_part.call_count == 2
-            assert len(writer.parts) == 2
-            assert writer.part_number == 3  # Next part would be #3
-            assert len(writer.buffer) == 50  # Remaining bytes
-            assert bytes(writer.buffer) == b'x' * 50
-
-            # Verify parts structure
-            assert writer.parts[0] == {'PartNumber': 1, 'ETag': 'test-etag-1'}
-            assert writer.parts[1] == {'PartNumber': 2, 'ETag': 'test-etag-1'}
-
-    asyncio.run(run_test())
-
-
-def test_shard_writer_close_with_buffer():
-    """Test ShardWriter close method with data remaining in buffer."""
-
-    async def run_test():
-        with patch('cdx_toolkit.repackage.s3_writer.mpu_upload_part') as mock_upload_part, patch(
-            'cdx_toolkit.repackage.s3_writer.mpu_complete'
-        ) as mock_complete:
-            mock_upload_part.return_value = 'final-etag'
-
-            mock_s3 = AsyncMock()
-
-            writer = S3ShardWriter(
-                s3_client=mock_s3,
-                shard_key='test.warc.gz',
-                dest_bucket='test-bucket',
-                content_type='application/gzip',
-                min_part_size=1000,  # Large min size to keep data in buffer
-                max_attempts=3,
-                base_backoff_seconds=0.1,
-            )
-            writer.upload_id = 'test-upload-id'
-
-            # Add some data to buffer
-            remaining_data = b'final chunk data'
-            writer.buffer.extend(remaining_data)
-
-            await writer.close()
-
-            # Should upload the final part and complete MPU
-            mock_upload_part.assert_called_once_with(
-                mock_s3,
-                'test-bucket',
-                'test.warc.gz',
-                'test-upload-id',
-                1,  # part number
-                remaining_data,
-                3,  # max attempts
-                0.1,  # base backoff
-            )
-
-            mock_complete.assert_called_once_with(
-                mock_s3,
-                'test-bucket',
-                'test.warc.gz',
-                'test-upload-id',
-                [{'PartNumber': 1, 'ETag': 'final-etag'}],
-                3,  # max attempts
-                0.1,  # base backoff
-            )
-
-            # Buffer should be cleared
-            assert len(writer.buffer) == 0
-            assert len(writer.parts) == 1
-
-    asyncio.run(run_test())
-
-
-def test_shard_writer_close_empty():
-    """Test ShardWriter close method with no data (empty buffer, no parts)."""
-
-    async def run_test():
-        with patch('cdx_toolkit.repackage.s3_writer.mpu_upload_part') as mock_upload_part, patch(
-            'cdx_toolkit.repackage.s3_writer.mpu_complete'
-        ) as mock_complete:
-            mock_s3 = AsyncMock()
-
-            writer = S3ShardWriter(
-                s3_client=mock_s3,
-                shard_key='test.warc.gz',
-                dest_bucket='test-bucket',
-                content_type='application/gzip',
-                min_part_size=1000,
-                max_attempts=3,
-                base_backoff_seconds=0.1,
-            )
-            writer.upload_id = 'test-upload-id'
-
-            # No data in buffer, no parts uploaded
-            await writer.close()
-
-            # Should not upload any parts or complete MPU since there's no data
-            mock_upload_part.assert_not_called()
-            mock_complete.assert_not_called()
-
-            # State should remain unchanged
-            assert len(writer.buffer) == 0
-            assert len(writer.parts) == 0
-
-    asyncio.run(run_test())
-
-
-def test_shard_writer_close_with_exception():
-    """Test ShardWriter close method with exception and abort handling."""
-
-    async def run_test():
-        with patch('cdx_toolkit.repackage.s3_writer.mpu_upload_part') as mock_upload_part, patch(
-            'cdx_toolkit.repackage.s3_writer.mpu_complete'
-        ) as mock_complete, patch('cdx_toolkit.repackage.s3_writer.mpu_abort') as mock_abort:
-            mock_upload_part.return_value = 'error-etag'
-            mock_complete.side_effect = Exception('Complete failed')
-
-            mock_s3 = AsyncMock()
-
-            writer = S3ShardWriter(
-                s3_client=mock_s3,
-                shard_key='test.warc.gz',
-                dest_bucket='test-bucket',
-                content_type='application/gzip',
-                min_part_size=1000,
-                max_attempts=3,
-                base_backoff_seconds=0.1,
-            )
-            writer.upload_id = 'test-upload-id'
-
-            # Add some data to buffer to trigger upload and complete
-            writer.buffer.extend(b'some data')
-
-            # Should raise the exception after attempting abort
-            with pytest.raises(Exception, match='Complete failed'):
-                await writer.close()
-
-            # Should have attempted to upload part and complete, then abort on failure
-            mock_upload_part.assert_called_once()
-            mock_complete.assert_called_once()
-            mock_abort.assert_called_once_with(mock_s3, 'test-bucket', 'test.warc.gz', 'test-upload-id')
-
-    asyncio.run(run_test())
+from cdx_toolkit.repackage.s3_writer import S3ShardWriter, mpu_abort
 
 
 def test_mpu_abort_success():
@@ -277,11 +44,15 @@ def test_mpu_abort_with_exception():
 class FakeS3:
     """upload_part fails `fail_times` times (ClientError), then stores the part bodies."""
 
-    def __init__(self, fail_times):
+    def __init__(self, fail_times=0, fail_complete=False):
         self.fail_times = fail_times
+        self.fail_complete = fail_complete
         self.bodies = {}
         self.completed = None
         self.aborted = False
+
+    async def create_multipart_upload(self, Bucket, Key):
+        return {'UploadId': 'upload-id'}
 
     async def upload_part(self, PartNumber, Body, **kwargs):
         if self.fail_times:
@@ -293,6 +64,8 @@ class FakeS3:
         return {'ETag': f'etag-{PartNumber}'}
 
     async def complete_multipart_upload(self, MultipartUpload, **kwargs):
+        if self.fail_complete:
+            raise RuntimeError('complete failed')
         self.completed = b''.join(self.bodies[p['PartNumber']] for p in MultipartUpload['Parts'])
 
     async def abort_multipart_upload(self, **kwargs):
@@ -337,3 +110,39 @@ def test_shard_writer_retried_part_keeps_every_byte_once():
     asyncio.run(run())
     assert s3.completed == b'ABCDEFGHIJ'
     assert not s3.aborted
+
+
+def test_shard_writer_uploads_parts_of_the_minimum_size():
+    s3 = FakeS3()
+    writer = make_writer(s3)
+
+    async def run():
+        await writer.start()
+        await writer.write(b'AB')
+        assert s3.bodies == {}  # buffered
+        await writer.write(b'CDEFGHIJK')
+        assert s3.bodies == {1: b'ABCD', 2: b'EFGH'}
+        await writer.close()
+
+    asyncio.run(run())
+    assert s3.bodies[3] == b'IJK'
+    assert s3.completed == b'ABCDEFGHIJK'
+
+
+def test_shard_writer_without_data_completes_nothing():
+    s3 = FakeS3()
+    asyncio.run(make_writer(s3).close())
+    assert s3.completed is None and not s3.aborted
+
+
+def test_shard_writer_failed_complete_aborts_the_upload():
+    s3 = FakeS3(fail_complete=True)
+    writer = make_writer(s3)
+
+    async def run():
+        await writer.write(b'AB')
+        with pytest.raises(RuntimeError, match='complete failed'):
+            await writer.close()
+
+    asyncio.run(run())
+    assert s3.aborted
