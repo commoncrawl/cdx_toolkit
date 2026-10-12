@@ -79,7 +79,8 @@ def _run_worker(cfg: Dict) -> RepackageResult:
     """Worker entrypoint (runs in a child process): fetch one shard into the output WARCs."""
     if cfg.get('uvloop'):
         os.environ['CDXT_UVLOOP'] = '1'
-    source = RecordsSource(read_records(cfg['shard'], 'jsonl'), warc_download_prefix=None, sort=True)
+    # the shard is in the order of the source (sorted, unless --no-sort), streamed
+    source = RecordsSource(read_records(cfg['shard'], 'jsonl'), warc_download_prefix=None, sort=False)
     wf = WARCFilter(
         source=source,
         prefix_path=cfg['prefix_path'],

@@ -377,3 +377,17 @@ def test_multiprocess_repackage(tmp_path, remote):
     finally:
         if remote:
             fs.rm('/mp-test', recursive=True)
+
+
+def test_multiprocess_repackage_keeps_the_order_of_the_source(tmp_path):
+    """Workers do not sort their shard again (--no-sort streams, a sorted source is sorted already)."""
+    captures = CAPTURES[::-1]
+    with patch.object(multiprocess, 'ProcessPoolExecutor', InlineExecutor), \
+            patch('cdx_toolkit.repackage.data_classes.myrequests_get', side_effect=fake_get):
+        multiprocess.run_multiprocess_repackage(
+            source=RecordsSource(captures, 'https://data.example.org', sort=False), n_processes=1,
+            readers_per_process=1, prefix_path=str(tmp_path / 'RUN'), writer_info={}, writer_subprefix=None,
+            write_paths_as_metadata_records=None, log_every_n=1, max_attempts=1, uvloop=False,
+        )
+    records = response_records(glob.glob(str(tmp_path / 'RUN-*.warc.gz')))
+    assert [r.rec_headers.get_header('WARC-Target-URI') for r in records] == [c['url'] for c in captures]
