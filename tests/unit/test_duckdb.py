@@ -39,6 +39,34 @@ def test_without_duckdb():
         list(iter_duckdb_rows('SELECT 1'))
 
 
+def run_with_fake_connection(query):
+    """The rows of the query, the executed statements and the connection."""
+    con = MagicMock()
+    con.execute.return_value.description = [('n',)]
+    con.execute.return_value.fetchmany.side_effect = [[(1,)], []]
+    fake_duckdb = MagicMock(connect=MagicMock(return_value=con))
+    with patch.object(duckdb_source, '_HAS_DUCKDB', True), \
+            patch.object(duckdb_source, 'duckdb', fake_duckdb, create=True):
+        rows = list(iter_duckdb_rows(query))
+    return rows, [c.args[0] for c in con.execute.call_args_list], con
+
+
+@pytest.mark.parametrize('query, httpfs, s3', [
+    ("SELECT 1 AS n FROM read_parquet('/data/index/*.parquet')", False, False),
+    ("SELECT 1 AS n FROM read_parquet('https://data.commoncrawl.org/x.parquet')", True, False),
+    ("SELECT 1 AS n FROM read_parquet('s3://commoncrawl/x.parquet')", True, True),
+])
+def test_extensions_and_credentials_only_when_needed(monkeypatch, query, httpfs, s3):
+    monkeypatch.setattr('cdx_toolkit.aws.user_aws_config', lambda: {})
+    rows, statements, _ = run_with_fake_connection(query)
+    assert rows == [{'n': 1}]
+    assert ('INSTALL httpfs; LOAD httpfs;' in statements) == httpfs
+    assert ('SET http_timeout=120;' in statements) == httpfs
+    assert ('INSTALL aws; LOAD aws;' in statements) == s3
+    assert any(stmt.startswith('SET s3_region=') for stmt in statements) == s3
+    assert statements[-1] == query
+
+
 def test_connection_setup_and_hf_filesystem(monkeypatch):
     for name in ('AWS_REGION', 'AWS_DEFAULT_REGION', 'AWS_MAX_ATTEMPTS', 'CDXT_AWS_DEFAULTS'):
         monkeypatch.delenv(name, raising=False)
@@ -50,7 +78,7 @@ def test_connection_setup_and_hf_filesystem(monkeypatch):
     hf_fs = MagicMock()
 
     fake_hf = MagicMock(HfFileSystem=MagicMock(return_value=hf_fs))
-    query = "SELECT count(*) AS n FROM read_parquet('hf://buckets/x/y/*.parquet')"
+    query = "SELECT count(*) AS n FROM read_parquet(['hf://buckets/x/y/*.parquet', 's3://commoncrawl/x.parquet'])"
     with patch.object(duckdb_source, '_HAS_DUCKDB', True), \
             patch.object(duckdb_source, 'duckdb', fake_duckdb, create=True), \
             patch.dict('sys.modules', {'huggingface_hub': fake_hf}):
