@@ -2,7 +2,7 @@ import asyncio
 import time
 from dataclasses import dataclass
 
-from cdx_toolkit.repackage.s3_utils import is_s3_url, parse_s3_uri, with_retries
+from cdx_toolkit.repackage.s3_utils import RETRYABLE_ERRORS, is_s3_url, parse_s3_uri, with_retries
 from cdx_toolkit.repackage.hf_utils import is_hf_url
 from typing import Optional, Tuple
 
@@ -98,16 +98,23 @@ class RangeJob:
             if readers is None:
                 raise ValueError('s3:// range read requires readers (none were provided)')
             s3_client = await readers.s3()
-            resp = await with_retries(
-                lambda: s3_client.get_object(Bucket=bucket, Key=key, Range=f'bytes={offset}-{end}'),
+
+            async def transfer() -> bytes:
+                """The whole transfer is retried: the request and reading the body (closed in any case)."""
+                resp = await s3_client.get_object(Bucket=bucket, Key=key, Range=f'bytes={offset}-{end}')
+                async with resp['Body'] as body:
+                    data = await body.read()
+                if len(data) != length:
+                    raise RangeError(f'{self.url}: requested {length} bytes from offset {offset}, got {len(data)}')
+                return data
+
+            return await with_retries(
+                transfer,
                 op_name=f'ranged_get {bucket}/{key}[{offset}:{end}]',
                 max_attempts=max_attempts,
                 base_backoff_seconds=base_backoff_seconds,
+                retry_on=RETRYABLE_ERRORS + (RangeError,),
             )
-            data = await resp['Body'].read()
-            if len(data) != length:
-                raise RangeError(f'{self.url}: requested {length} bytes from offset {offset}, got {len(data)}')
-            return data
 
         elif self.is_hf():
             # read from a Hugging Face bucket (hf://) via the configured HF reader

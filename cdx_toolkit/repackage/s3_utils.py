@@ -4,13 +4,27 @@ from typing import Optional, Tuple
 from os import urandom
 
 try:
-    from botocore.exceptions import ClientError, EndpointConnectionError
+    from botocore.exceptions import ClientError, EndpointConnectionError, HTTPClientError, IncompleteReadError
 except ImportError:  # pragma: no cover - S3 support is optional (cdx_toolkit[s3])
     class ClientError(Exception):
         pass
 
     class EndpointConnectionError(Exception):
         pass
+
+    HTTPClientError = IncompleteReadError = EndpointConnectionError
+
+try:
+    from aiohttp import ClientError as AiohttpClientError  # aiobotocore's transport
+except ImportError:  # pragma: no cover
+    AiohttpClientError = EndpointConnectionError
+
+# errors of a request or of reading its response that may be transient: timeouts, closed connections, interrupted
+# or incomplete responses, S3 errors (e.g. 503 SlowDown; botocore retries those itself, too)
+RETRYABLE_ERRORS = (
+    TimeoutError, asyncio.TimeoutError, ConnectionError, ClientError, EndpointConnectionError, HTTPClientError,
+    IncompleteReadError, AiohttpClientError,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -31,13 +45,14 @@ def is_s3_url(url: Optional[str]) -> bool:
     return bool(url) and url.startswith('s3:/')
 
 
-async def with_retries(coro_factory, *, op_name: str, max_attempts: int, base_backoff_seconds: float):
+async def with_retries(coro_factory, *, op_name: str, max_attempts: int, base_backoff_seconds: float,
+                       retry_on: Tuple[type, ...] = RETRYABLE_ERRORS):
     """Perform operation with retries and backoff."""
     last_exc = None
     for attempt in range(1, max_attempts + 1):
         try:
             return await coro_factory()
-        except (TimeoutError, ClientError, EndpointConnectionError) as exc:
+        except retry_on as exc:
             last_exc = exc
             if attempt >= max_attempts:
                 logger.error('%s failed after %d attempts: %r', op_name, attempt, exc)

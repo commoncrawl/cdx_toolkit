@@ -249,6 +249,12 @@ class FakeS3Client:
         start, end = (int(n) for n in Range[len('bytes='):].split('-'))
 
         class Body:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
             async def read(self):
                 return SERVER.files[Key][start:end + 1]
 
@@ -321,22 +327,57 @@ def test_failing_metadata_record_removes_the_file(tmp_path):
     assert glob.glob(str(tmp_path / 'out-*')) == []
 
 
-def test_s3_reads_check_the_length():
-    class Readers:
-        async def s3(self):
-            class Client:
-                async def get_object(self, **kwargs):
-                    class Body:
-                        async def read(self):
-                            return b'short'
-                    return {'Body': Body()}
-            return Client()
+class FakeS3Readers:
+    """An S3 client whose responses have the given bodies (bytes, or an exception raised when reading)."""
 
+    def __init__(self, *bodies):
+        self.bodies = list(bodies)
+        self.requests = 0
+        self.closed = 0
+
+    async def s3(self):
+        readers = self
+
+        class Body:
+            def __init__(self, content):
+                self.content = content
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc_info):
+                readers.closed += 1
+
+            async def read(self):
+                if isinstance(self.content, Exception):
+                    raise self.content
+                return self.content
+
+        class Client:
+            async def get_object(self, **kwargs):
+                readers.requests += 1
+                return {'Body': Body(readers.bodies.pop(0))}
+
+        return Client()
+
+
+def test_s3_reads_check_the_length():
     job = RangeJob(url='s3://commoncrawl/crawl-data/a.warc.gz', offset=0, length=10)
     with pytest.raises(RangeError, match='requested 10 bytes'):
-        asyncio.run(job.ranged_get_bytes(1, 0, readers=Readers()))
+        asyncio.run(job.ranged_get_bytes(1, 0, readers=FakeS3Readers(b'short')))
     with pytest.raises(ValueError, match='requires readers'):
         asyncio.run(job.ranged_get_bytes(1, 0))
+
+
+@requires_aioboto3
+def test_s3_reads_retry_the_whole_transfer():
+    from botocore.exceptions import ReadTimeoutError
+
+    readers = FakeS3Readers(ReadTimeoutError(endpoint_url='s3://x'), ConnectionResetError(), b'short', b'0123456789')
+    job = RangeJob(url='s3://commoncrawl/crawl-data/a.warc.gz', offset=0, length=10)
+    assert asyncio.run(job.ranged_get_bytes(5, 0, readers=readers)) == b'0123456789'
+    assert readers.requests == 4
+    assert readers.closed == 4  # also the failed responses
 
 
 @requires_aioboto3
