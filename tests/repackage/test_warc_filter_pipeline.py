@@ -2,7 +2,9 @@
 import asyncio
 import contextlib
 import glob
+import itertools
 import os
+import threading
 from io import BytesIO
 from unittest.mock import Mock, patch
 
@@ -12,6 +14,8 @@ from warcio import WARCWriter
 from warcio.archiveiterator import ArchiveIterator
 
 from cdx_toolkit.repackage import multiprocess
+from cdx_toolkit.repackage.data_classes import RangeJob
+from cdx_toolkit.repackage.local_writer import LocalFileWriter
 from cdx_toolkit.repackage.sources.records import RecordsSource
 from cdx_toolkit.repackage.warc_filter import WARCFilter
 from cdx_toolkit.repackage.warc_utils import get_bytes_from_warc_record
@@ -58,13 +62,78 @@ def test_reader_and_writer_errors_are_logged_and_skipped(tmp_path, caplog):
     assert len(response_records(glob.glob(str(tmp_path / 'out-*.warc.gz')))) == 3
 
 
-def test_writer_error_is_logged(tmp_path, caplog):
-    wf = WARCFilter(source=RecordsSource(CAPTURES[:1], 'https://data.example.org'), prefix_path=str(tmp_path / 'out'),
-                    writer_info={})
+def test_writer_error_stops_the_pipeline_and_removes_the_file(tmp_path):
+    wf = WARCFilter(source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'),
+                    writer_info={}, max_file_size=1)
+    writes = []
+
+    original_write = LocalFileWriter.write
+
+    async def failing_write(self, data):
+        writes.append(data)
+        if len(writes) == 4:  # warcinfo + record of the first file, warcinfo + record of the second
+            raise OSError('disk full')
+        await original_write(self, data)
+
     with patch('cdx_toolkit.repackage.data_classes.myrequests_get', side_effect=fake_get), \
-            patch('cdx_toolkit.repackage.warc_filter.create_new_writer_with_header', side_effect=OSError('disk full')):
-        assert wf.filter() == 0
-    assert 'WARC writer failed' in caplog.text
+            patch.object(LocalFileWriter, 'write', failing_write), pytest.raises(OSError, match='disk full'):
+        wf.filter()
+    # the first file is complete, the second was removed
+    assert [os.path.basename(p) for p in glob.glob(str(tmp_path / 'out-*'))] == ['out-001.warc.gz']
+
+
+def test_rotation_by_size(tmp_path):
+    wf = WARCFilter(source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'),
+                    writer_info={}, max_file_size=1)
+    with patch('cdx_toolkit.repackage.data_classes.myrequests_get', side_effect=fake_get):
+        assert wf.filter() == 4
+    paths = sorted(glob.glob(str(tmp_path / 'out-*.warc.gz')))
+    assert [os.path.basename(p) for p in paths] == [f'out-00{i}.warc.gz' for i in range(1, 5)]
+    assert all(len(response_records([p])) == 1 for p in paths)
+
+
+def test_cancellation_with_a_full_queue_and_a_blocked_reader(tmp_path):
+    """Cancelling must not wait for queue space: the producer thread stops and the current file is removed."""
+    source_done = threading.Event()
+
+    class EndlessSource:
+        def iter_range_jobs(self):
+            try:
+                for i in itertools.count():
+                    yield RangeJob(url=f'https://data.example.org/{i}', offset=0, length=1)
+            finally:
+                source_done.set()
+
+    reads = []
+
+    async def blocking_read(self, *args, **kwargs):
+        reads.append(self.url)
+        if len(reads) > 1:
+            await asyncio.Event().wait()  # blocks forever
+        return b'x'
+
+    wf = WARCFilter(source=EndlessSource(), prefix_path=str(tmp_path / 'out'), writer_info={},
+                    range_jobs_queue_size=2)
+
+    async def run():
+        task = asyncio.create_task(wf.filter_async())
+        while len(reads) < 2:
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.2)  # the queue fills up, the producer waits
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2)
+
+    def main():
+        with patch.object(RangeJob, 'ranged_get_bytes', blocking_read):
+            asyncio.run(run())
+
+    thread = threading.Thread(target=main, daemon=True)
+    thread.start()
+    thread.join(timeout=5)
+    assert not thread.is_alive(), 'shutdown did not finish'
+    assert source_done.wait(timeout=1), 'the producer thread is still waiting'
+    assert glob.glob(str(tmp_path / 'out-*')) == []
 
 
 def test_hf_reads_use_the_hf_reader(tmp_path):

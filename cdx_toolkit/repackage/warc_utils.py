@@ -133,6 +133,14 @@ async def create_new_writer_with_header(
 
     logger.debug('Initialzing new WARC writer for %s', warc_file_path)
 
+    try:
+        return await _start_with_header(new_writer, warc_file_path, writer_info, warc_version, gzip)
+    except BaseException:
+        await new_writer.abort()
+        raise
+
+
+async def _start_with_header(new_writer, warc_file_path: str, writer_info: Dict, warc_version: str, gzip: bool):
     # Initialize writer
     await new_writer.start()
 

@@ -82,7 +82,10 @@ async def mpu_abort(s3, bucket: str, key: str, upload_id: str):
 
 
 class S3ShardWriter:
-    """Manages one MPU: buffers bytes, uploads >=5 MiB parts, completes on close."""
+    """Manages one MPU: buffers bytes, uploads >=5 MiB parts, completes on close.
+
+    A part that cannot be uploaded (after the retries) makes the writer fail: the MPU is aborted, so no
+    object with missing bytes is created, and close() raises instead of completing the upload."""
 
     def __init__(
         self,
@@ -105,6 +108,7 @@ class S3ShardWriter:
         self.part_number = 1
         self.parts: List[Dict] = []
         self.buffer = bytearray()
+        self.failed = False
 
     async def start(self):
         self.upload_id = await mpu_create(
@@ -116,44 +120,39 @@ class S3ShardWriter:
         )
         logger.info('Started MPU for %s (UploadId=%s)', self.shard_key, self.upload_id)
 
-    async def _flush_full_parts(self):
-        while len(self.buffer) >= self.min_part_size:
-            chunk = self.buffer[: self.min_part_size]
-            del self.buffer[: self.min_part_size]
+    async def _upload_part(self, size: int):
+        """Upload the first `size` bytes of the buffer as the next part; they leave the buffer only once uploaded."""
+        if self.failed:
+            raise RuntimeError(f'the upload of {self.shard_key} failed before')
+        try:
             etag = await mpu_upload_part(
                 self.s3_client,
                 self.dest_bucket,
                 self.shard_key,
                 self.upload_id,
                 self.part_number,
-                bytes(chunk),
+                bytes(self.buffer[:size]),
                 self.max_attempts,
                 self.base_backoff_seconds,
             )
-            self.parts.append({'PartNumber': self.part_number, 'ETag': etag})
-            self.part_number += 1
+        except BaseException:
+            await self.abort()
+            raise
+        del self.buffer[:size]
+        self.parts.append({'PartNumber': self.part_number, 'ETag': etag})
+        self.part_number += 1
 
     async def write(self, data: bytes):
         self.buffer.extend(data)
-        await self._flush_full_parts()
+        while len(self.buffer) >= self.min_part_size:
+            await self._upload_part(self.min_part_size)
 
     async def close(self):
+        if self.failed:
+            raise RuntimeError(f'the upload of {self.shard_key} failed, it was aborted')
+        if self.buffer:
+            await self._upload_part(len(self.buffer))
         try:
-            if self.buffer:
-                etag = await mpu_upload_part(
-                    self.s3_client,
-                    self.dest_bucket,
-                    self.shard_key,
-                    self.upload_id,
-                    self.part_number,
-                    bytes(self.buffer),
-                    self.max_attempts,
-                    self.base_backoff_seconds,
-                )
-                self.parts.append({'PartNumber': self.part_number, 'ETag': etag})
-                self.part_number += 1
-                self.buffer.clear()
-
             if self.parts:
                 await mpu_complete(
                     self.s3_client,
@@ -165,8 +164,17 @@ class S3ShardWriter:
                     self.base_backoff_seconds,
                 )
             logger.info('Completed MPU for %s with %d parts.', self.shard_key, len(self.parts))
-        except Exception:
+        except BaseException:
             logger.exception('Completing MPU failed for %s; attempting abort.', self.shard_key)
-            if self.upload_id:
-                await mpu_abort(self.s3_client, self.dest_bucket, self.shard_key, self.upload_id)
+            await self.abort()
             raise
+
+    async def abort(self):
+        """Abort the MPU (no object is created); the writer cannot be used afterwards."""
+        if self.failed:
+            return
+        self.failed = True
+        self.buffer.clear()
+        if self.upload_id:
+            logger.warning('Aborting MPU for %s', self.shard_key)
+            await mpu_abort(self.s3_client, self.dest_bucket, self.shard_key, self.upload_id)

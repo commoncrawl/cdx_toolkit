@@ -110,43 +110,6 @@ def test_shard_writer_write_large_data():
     asyncio.run(run_test())
 
 
-def test_shard_writer_flush_full_parts():
-    """Test ShardWriter _flush_full_parts private method directly."""
-
-    async def run_test():
-        with patch('cdx_toolkit.repackage.s3_writer.mpu_upload_part') as mock_upload_part:
-            mock_upload_part.return_value = 'test-etag-flush'
-
-            mock_s3 = AsyncMock()
-            writer = S3ShardWriter(
-                s3_client=mock_s3,
-                shard_key='test.warc.gz',
-                dest_bucket='test-bucket',
-                content_type='application/gzip',
-                min_part_size=50,  # 50 bytes
-                max_attempts=3,
-                base_backoff_seconds=0.1,
-            )
-            writer.upload_id = 'test-upload-id'
-
-            # Pre-fill buffer with 150 bytes (should create 3 parts of 50 bytes each)
-            writer.buffer.extend(b'a' * 150)
-
-            await writer._flush_full_parts()
-
-            # Should have uploaded 3 full parts, no remainder
-            assert mock_upload_part.call_count == 3
-            assert len(writer.parts) == 3
-            assert writer.part_number == 4  # Next part would be #4
-            assert len(writer.buffer) == 0  # All data flushed
-
-            # Verify all parts were created correctly
-            for i in range(3):
-                assert writer.parts[i] == {'PartNumber': i + 1, 'ETag': 'test-etag-flush'}
-
-    asyncio.run(run_test())
-
-
 def test_shard_writer_close_with_buffer():
     """Test ShardWriter close method with data remaining in buffer."""
 
@@ -309,3 +272,68 @@ def test_mpu_abort_with_exception():
         mock_s3.abort_multipart_upload.assert_called_once_with(Bucket=bucket, Key=key, UploadId=upload_id)
 
     asyncio.run(run_test())
+
+
+class FakeS3:
+    """upload_part fails `fail_times` times (ClientError), then stores the part bodies."""
+
+    def __init__(self, fail_times):
+        self.fail_times = fail_times
+        self.bodies = {}
+        self.completed = None
+        self.aborted = False
+
+    async def upload_part(self, PartNumber, Body, **kwargs):
+        if self.fail_times:
+            self.fail_times -= 1
+            from botocore.exceptions import ClientError
+
+            raise ClientError({'Error': {'Code': '500', 'Message': 'boom'}}, 'UploadPart')
+        self.bodies[PartNumber] = Body
+        return {'ETag': f'etag-{PartNumber}'}
+
+    async def complete_multipart_upload(self, MultipartUpload, **kwargs):
+        self.completed = b''.join(self.bodies[p['PartNumber']] for p in MultipartUpload['Parts'])
+
+    async def abort_multipart_upload(self, **kwargs):
+        self.aborted = True
+
+
+def make_writer(s3):
+    writer = S3ShardWriter(s3, 'out.warc.gz', 'bucket', None, min_part_size=4, max_attempts=2,
+                           base_backoff_seconds=0)
+    writer.upload_id = 'upload-id'
+    return writer
+
+
+def test_shard_writer_failed_part_aborts_the_upload():
+    pytest.importorskip('botocore')
+    s3 = FakeS3(fail_times=2)  # more than max_attempts
+    writer = make_writer(s3)
+
+    async def run():
+        with pytest.raises(Exception, match='boom'):
+            await writer.write(b'ABCD')
+        with pytest.raises(RuntimeError):
+            await writer.write(b'EFGH')
+        with pytest.raises(RuntimeError, match='aborted'):
+            await writer.close()
+
+    asyncio.run(run())
+    assert s3.aborted
+    assert s3.completed is None
+
+
+def test_shard_writer_retried_part_keeps_every_byte_once():
+    pytest.importorskip('botocore')
+    s3 = FakeS3(fail_times=1)  # less than max_attempts
+    writer = make_writer(s3)
+
+    async def run():
+        await writer.write(b'ABCDEF')
+        await writer.write(b'GHIJ')
+        await writer.close()
+
+    asyncio.run(run())
+    assert s3.completed == b'ABCDEFGHIJ'
+    assert not s3.aborted

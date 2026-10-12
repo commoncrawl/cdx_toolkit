@@ -1,8 +1,10 @@
 import asyncio
+import concurrent.futures
 import contextlib
 import logging
 import os
 import statistics
+import threading
 from typing import Callable, List, Optional, Dict
 
 
@@ -214,26 +216,33 @@ class WARCFilter:
                 hf_reader=hf_reader,
             )
 
-    async def _produce_range_jobs(self, range_jobs_queue: asyncio.Queue) -> int:
+    async def _produce_range_jobs(self, range_jobs_queue: asyncio.Queue, stop: threading.Event) -> int:
         """Drive the (sync) source in a worker thread, feeding the async queue.
 
-        Owns counting and emitting one _STOP sentinel per reader in a finally -- so
-        readers never hang even if the source raises mid-iteration."""
+        The thread waits for queue space in short steps, so it stops soon after `stop` is set (cancellation,
+        or a failed writer), also when the queue is full and nobody reads from it anymore."""
         loop = asyncio.get_running_loop()
-        count = 0
 
         def drain() -> int:
-            nonlocal count
+            count = 0
             for job in self.source.iter_range_jobs():
-                asyncio.run_coroutine_threadsafe(range_jobs_queue.put(job), loop).result()
+                future = asyncio.run_coroutine_threadsafe(range_jobs_queue.put(job), loop)
+                while True:
+                    if stop.is_set():
+                        future.cancel()
+                        return count
+                    try:
+                        future.result(timeout=0.1)
+                        break
+                    except concurrent.futures.TimeoutError:
+                        pass
                 count += 1
             return count
 
         try:
-            await asyncio.to_thread(drain)
+            count = await asyncio.to_thread(drain)
         finally:
-            for _ in range(self.num_readers):
-                await range_jobs_queue.put(_STOP)
+            stop.set()  # the thread keeps running if this task is cancelled; let it stop
 
         logger.info('Generated %d range jobs', count)
         return count
@@ -248,6 +257,9 @@ class WARCFilter:
     ) -> int:
         """Run the actual filter pipeline with or without S3 client.
 
+        A failing writer (or source) stops the whole pipeline, as does cancellation: all tasks are cancelled,
+        and the writer aborts the file it is writing (no incomplete WARC file or S3 object is left).
+
         Args:
             range_jobs_queue: Queue for range jobs from the source.
             warc_records_queue: Queue for WARC record payloads.
@@ -259,9 +271,10 @@ class WARCFilter:
             int: Number of records written.
         """
         logger.info('Starting job generator, %d WARC readers, 1 WARC writer', self.num_readers)
+        stop = threading.Event()
 
         # Generate range jobs from the configured source (bridged sync->async in a thread).
-        job_generators = asyncio.create_task(self._produce_range_jobs(range_jobs_queue))
+        producer = asyncio.create_task(self._produce_range_jobs(range_jobs_queue, stop))
 
         # Read WARC records based on file paths and ranges
         warc_readers = [
@@ -285,16 +298,29 @@ class WARCFilter:
             )
         )
 
-        # Start writer coordination task
-        writer_coordinator = asyncio.create_task(self._coordinate_writer_shutdown(warc_readers, warc_records_queue))
+        async def feed():
+            """Wait for the jobs to be produced and read, then stop the readers and the writer."""
+            await producer
+            for _ in warc_readers:
+                await range_jobs_queue.put(_STOP)
+            results = await asyncio.gather(*warc_readers)
+            await warc_records_queue.put(_STOP)
+            return results
 
-        await job_generators
-        logger.info('Range jobs submitted, monitoring readers and writer')
-
-        # Wait for all tasks to complete
-        readers_results = await asyncio.gather(*warc_readers)
-        writer_result = await warc_writer
-        await writer_coordinator
+        feeder = asyncio.create_task(feed())
+        tasks = [producer, *warc_readers, warc_writer, feeder]
+        try:
+            done, _ = await asyncio.wait({feeder, warc_writer}, return_when=asyncio.FIRST_EXCEPTION)
+            for task in done:
+                task.result()  # raises the exception of a failed task
+            readers_results = await feeder
+            writer_result = await warc_writer
+        except BaseException:
+            stop.set()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
 
         readers_records = sum([result['stats']['total_records'] for result in readers_results])
         readers_mb_per_sec = self.num_readers * statistics.mean(
@@ -315,31 +341,6 @@ class WARCFilter:
         )
 
         return writer_stats['total_records']
-
-    async def _coordinate_writer_shutdown(self, warc_readers: List[asyncio.Task], warc_records_queue: asyncio.Queue):
-        """Coordinate efficient shutdown of writers as readers complete.
-
-        This prevents writers from waiting unnecessarily when all readers are done
-        and the records queue is being drained.
-        """
-        completed_readers = 0
-
-        # Monitor reader completion
-        while completed_readers < len(warc_readers):
-            # Wait for any reader to complete
-            done, pending = await asyncio.wait(
-                warc_readers,
-                return_when=asyncio.FIRST_COMPLETED,
-                timeout=1.0,  # Check periodically
-            )
-
-            if done:
-                completed_readers = len(warc_readers) - len(pending)
-                logger.debug(f'Readers completed: {completed_readers}/{len(warc_readers)}')
-
-        # All readers completed - signal the writer to stop
-        logger.info('All readers completed, signaling writer to stop')
-        await warc_records_queue.put(_STOP)
 
     async def read_warc_records(
         self,
@@ -403,8 +404,6 @@ class WARCFilter:
                     getattr(job, 'offset', -1),
                     getattr(job, 'length', -1),
                 )
-            finally:
-                range_jobs_queue.task_done()
 
         return {'reader_id': reader_id, 'stats': tracker.get_stats()}
 
@@ -472,67 +471,56 @@ class WARCFilter:
         tracker.start()
         counter = 0
 
-        # Response records
+        # Response records; any failure is fatal: the current file is aborted (removed, or its S3 upload
+        # aborted), the files written before stay complete
         try:
             while True:
                 item = await warc_records_queue.get()
-                counter += 1
-                try:
-                    if item is _STOP:
-                        stats = tracker.get_stats()
-                        logger.info(
-                            'WARC writer stopping. Stats: %.1fs, %d items, %.1f MB written, %.2f MB/s write speed',
-                            stats['elapsed'],
-                            stats['total_requests'],
-                            stats['total_bytes'] / (1024 * 1024),
-                            stats['mb_per_sec'],
-                        )
-                        should_stop = True
-                    else:
-                        should_stop = False
-                        assert isinstance(item, RangePayload)
-
-                        if writer is None:
-                            # first file, with header and metadata records
-                            current_file_sequence = self.next_file_sequence(0)
-                            writer, current_file_size = await self.start_file(
-                                current_file_sequence, **new_writer_kwargs
-                            )
-                            records_in_file = 0
-                        elif records_in_file:
-                            # Check if we need to rotate files due to size limit (a file gets at least
-                            # one record, also if the record is larger than the size limit)
-                            previous_sequence = current_file_sequence
-                            writer, current_file_sequence, current_file_size = await self.rotate_files(
-                                writer=writer,
-                                current_file_sequence=current_file_sequence,
-                                current_file_size=current_file_size,
-                                added_byte_size=len(item.data),
-                                **new_writer_kwargs,
-                            )
-                            if current_file_sequence != previous_sequence:
-                                records_in_file = 0
-
-                        # Write actual response record
-                        await writer.write(item.data)
-                        records_in_file += 1
-                        current_file_size += len(item.data)
-                        tracker.add(bytes_count=len(item.data), records_count=item.job.records_count)
-
-                        # Log progress every N items
-                        self.log_writer(counter=counter, tracker=tracker)
-
-                except Exception:
-                    logger.exception('WARC writer failed on %s', getattr(item, 'job', None))
-                    should_stop = False
-                finally:
-                    warc_records_queue.task_done()
-
-                if should_stop:
+                if item is _STOP:
+                    stats = tracker.get_stats()
+                    logger.info(
+                        'WARC writer stopping. Stats: %.1fs, %d items, %.1f MB written, %.2f MB/s write speed',
+                        stats['elapsed'],
+                        stats['total_requests'],
+                        stats['total_bytes'] / (1024 * 1024),
+                        stats['mb_per_sec'],
+                    )
                     break
-        finally:
+                assert isinstance(item, RangePayload)
+                counter += 1
+
+                if writer is None:
+                    # first file, with header and metadata records
+                    current_file_sequence = self.next_file_sequence(0)
+                    writer, current_file_size = await self.start_file(current_file_sequence, **new_writer_kwargs)
+                    records_in_file = 0
+                elif records_in_file and self.max_file_size and \
+                        current_file_size + len(item.data) > self.max_file_size:
+                    # rotate due to the size limit (a file gets at least one record, also if the record is
+                    # larger than the size limit); the finished file is not aborted if starting the next fails
+                    finished, writer = writer, None
+                    await finished.close()
+                    current_file_sequence = self.next_file_sequence(current_file_sequence)
+                    writer, current_file_size = await self.start_file(current_file_sequence, **new_writer_kwargs)
+                    records_in_file = 0
+                    logger.info(f'Rotated to new WARC file sequence {current_file_sequence} due to size limit')
+
+                # Write actual response record
+                await writer.write(item.data)
+                records_in_file += 1
+                current_file_size += len(item.data)
+                tracker.add(bytes_count=len(item.data), records_count=item.job.records_count)
+
+                # Log progress every N items
+                self.log_writer(counter=counter, tracker=tracker)
+        except BaseException:
+            logger.error('WARC writer failed, aborting the current WARC file')
             if writer is not None:
-                await writer.close()
+                await writer.abort()
+            raise
+
+        if writer is not None:
+            await writer.close()
 
         return {'stats': tracker.get_stats()}
 
@@ -560,23 +548,15 @@ class WARCFilter:
                 stats['mb_per_sec'],
             )
 
-    async def rotate_files(
-        self, writer, current_file_sequence: int, current_file_size: int, added_byte_size: int, **new_writer_kwargs
-    ):
-        """Check if we need to rotate files due to size limit and perform rotation if needed."""
-        if self.max_file_size and current_file_size + added_byte_size > self.max_file_size:
-            await writer.close()
-            current_file_sequence = self.next_file_sequence(current_file_sequence)
-            writer, current_file_size = await self.start_file(current_file_sequence, **new_writer_kwargs)
-            logger.info(f'Rotated to new WARC file sequence {current_file_sequence} due to size limit')
-
-        return writer, current_file_sequence, current_file_size
-
     async def start_file(self, sequence: int, **new_writer_kwargs):
         """Start a new WARC file with its warcinfo record (and the metadata records, if any).
 
         Returns the writer and the number of bytes written."""
         writer, file_size, warcinfo_id = await create_new_writer_with_header(sequence=sequence, **new_writer_kwargs)
         if self.write_paths_as_metadata_records:
-            file_size += await self.write_metadata_records(writer, warcinfo_id=warcinfo_id)
+            try:
+                file_size += await self.write_metadata_records(writer, warcinfo_id=warcinfo_id)
+            except BaseException:
+                await writer.abort()
+                raise
         return writer, file_size

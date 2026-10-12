@@ -1,3 +1,6 @@
+import asyncio
+import os
+
 import aiofiles
 
 
@@ -12,7 +15,13 @@ class LocalFileWriter:
         self.buffer = bytearray()
 
     async def start(self):
-        self.file_handle = await aiofiles.open(self.file_path, self.mode)
+        opening = asyncio.ensure_future(aiofiles.open(self.file_path, self.mode))
+        try:
+            self.file_handle = await asyncio.shield(opening)
+        except asyncio.CancelledError:
+            # the file is created anyway: finish opening it, so that abort() can remove it
+            self.file_handle = await opening
+            raise
 
     async def write(self, data: bytes):
         self.buffer.extend(data)
@@ -35,3 +44,14 @@ class LocalFileWriter:
             if self.file_handle:
                 await self.file_handle.close()
             raise
+
+    async def abort(self):
+        """Close and remove the (incomplete) file."""
+        self.buffer.clear()
+        if self.file_handle:
+            await self.file_handle.close()
+            self.file_handle = None
+        try:
+            os.remove(self.file_path)
+        except FileNotFoundError:
+            pass
