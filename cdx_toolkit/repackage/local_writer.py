@@ -5,7 +5,9 @@ import aiofiles
 
 
 class LocalFileWriter:
-    """Async writer for local file system using aiofiles."""
+    """Async writer for local file system using aiofiles.
+
+    Like S3ShardWriter: close() completes the file, or removes it and raises; abort() removes it."""
 
     def __init__(self, file_path: str, buffer_size: int = 8192, mode: str = 'wb'):
         self.file_path = file_path
@@ -35,13 +37,16 @@ class LocalFileWriter:
             self.buffer.clear()
 
     async def close(self):
+        """Flush and close the file; if that fails, the (incomplete) file is removed."""
         try:
             if self.buffer:
                 await self._flush()
-        finally:
             if self.file_handle:
-                await self.file_handle.close()
-                self.file_handle = None
+                file_handle, self.file_handle = self.file_handle, None
+                await file_handle.close()
+        except BaseException:
+            await self.abort()
+            raise
 
     async def abort(self):
         """Close and remove the (incomplete) file."""

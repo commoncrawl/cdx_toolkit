@@ -148,10 +148,11 @@ class S3ShardWriter:
             await self._upload_part(self.min_part_size)
 
     async def close(self):
+        """Upload the rest and complete the MPU; if that fails, the MPU is aborted."""
         if self.failed:
             raise RuntimeError(f'the upload of {self.shard_key} failed, it was aborted')
         if self.buffer:
-            await self._upload_part(len(self.buffer))
+            await self._upload_part(len(self.buffer))  # aborts on failure
         try:
             if self.parts:
                 await mpu_complete(

@@ -124,6 +124,28 @@ def test_writer_error_stops_the_pipeline_and_removes_the_file(tmp_path):
     assert [os.path.basename(p) for p in glob.glob(str(tmp_path / 'out-*'))] == ['out-001.warc.gz']
 
 
+@pytest.mark.parametrize('failing_close, expected_files', [
+    (1, []),  # rotation: the file being closed is removed, no next file is started
+    (2, ['out-001.warc.gz']),  # the final close: the last file is removed, the complete first one stays
+])
+def test_close_error_stops_the_pipeline_and_removes_the_file(tmp_path, failing_close, expected_files):
+    wf = WARCFilter(source=RecordsSource(CAPTURES[:2], 'https://data.example.org'),
+                    prefix_path=str(tmp_path / 'out'), writer_info={}, max_file_size=1)
+    flushes = []
+    original_flush = LocalFileWriter._flush
+
+    async def failing_flush(self):
+        flushes.append(self.file_path)
+        if len(flushes) == failing_close:
+            raise OSError('disk full')
+        await original_flush(self)
+
+    with patch('cdx_toolkit.repackage.data_classes.myrequests_get', side_effect=fake_get), \
+            patch.object(LocalFileWriter, '_flush', failing_flush), pytest.raises(OSError, match='disk full'):
+        wf.filter()
+    assert [os.path.basename(p) for p in glob.glob(str(tmp_path / 'out-*'))] == expected_files
+
+
 def test_rotation_by_size(tmp_path):
     wf = WARCFilter(source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'),
                     writer_info={}, max_file_size=1)

@@ -54,7 +54,7 @@ def test_start_fails_without_the_directory(tmp_path):
         run(LocalFileWriter(os.path.join(str(tmp_path), 'missing', 'out')).start())
 
 
-def test_close_closes_the_file_if_the_last_write_fails(tmp_path):
+def test_close_removes_the_file_if_the_last_write_fails(tmp_path):
     async def close_with_failing_flush():
         writer = LocalFileWriter(str(tmp_path / 'out'))
         await writer.start()
@@ -70,3 +70,4 @@ def test_close_closes_the_file_if_the_last_write_fails(tmp_path):
         assert writer.file_handle is None and handle.closed
 
     run(close_with_failing_flush())
+    assert not (tmp_path / 'out').exists()

@@ -443,8 +443,8 @@ class WARCFilter:
         tracker.start()
         counter = 0
 
-        # Response records; any failure is fatal: the current file is aborted (removed, or its S3 upload
-        # aborted), the files written before stay complete
+        # Response records; any failure is fatal, also when closing a file: the current file is aborted
+        # (removed, or its S3 upload aborted), the files completed before stay
         try:
             while True:
                 item = await warc_records_queue.get()
@@ -470,8 +470,8 @@ class WARCFilter:
                         current_file_size + len(item.data) > self.max_file_size:
                     # rotate due to the size limit (a file gets at least one record, also if the record is
                     # larger than the size limit); the finished file is not aborted if starting the next fails
-                    finished, writer = writer, None
-                    await finished.close()
+                    await writer.close()
+                    writer = None
                     current_file_sequence = self.next_file_sequence(current_file_sequence)
                     writer, current_file_size = await self.start_file(current_file_sequence, **new_writer_kwargs)
                     records_in_file = 0
@@ -485,14 +485,16 @@ class WARCFilter:
 
                 # Log progress every N items
                 self.log_writer(counter=counter, tracker=tracker)
+
+            if writer is not None:
+                await writer.close()
         except BaseException:
+            # also if closing failed: a writer that cannot close removes its file (or aborts its upload) itself,
+            # and abort() is a no-op then
             logger.error('WARC writer failed, aborting the current WARC file')
             if writer is not None:
                 await writer.abort()
             raise
-
-        if writer is not None:
-            await writer.close()
 
         return {'stats': tracker.get_stats()}
 
