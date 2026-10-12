@@ -1,5 +1,6 @@
 from io import BytesIO
 import logging
+import os
 from pathlib import Path
 import fsspec
 from warcio.recordloader import ArcWarcRecord
@@ -145,7 +146,9 @@ async def _start_with_header(new_writer, warc_file_path: str, writer_info: Dict,
     await new_writer.start()
 
     # Write WARC header; the `filename` field names this file
-    warc_file_name = warc_file_path.split('/')[-1]
+    # an S3 key or a local path (with backslashes on Windows)
+    warc_file_name = warc_file_path.split('/')[-1] if isinstance(new_writer, S3ShardWriter) \
+        else os.path.basename(warc_file_path)
     buffer = BytesIO()
     warc_writer = WARCWriter(buffer, gzip=gzip, warc_version=warc_version)
     warcinfo = warc_writer.create_warcinfo_record(

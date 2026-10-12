@@ -196,8 +196,9 @@ class CdxFilesBackend(IndexBackend):
         import fsspec
 
         if not is_glob(self.location):
-            name = self.location.split('?', 1)[0] if '://' in self.location else self.location
-            return [(self.location, name.rstrip('/').rsplit('/', 1)[-1])]
+            if '://' in self.location:
+                return [(self.location, self.location.split('?', 1)[0].rstrip('/').rsplit('/', 1)[-1])]
+            return [(self.location, os.path.basename(self.location))]  # also with backslashes on Windows
         fs, fs_path = fsspec.url_to_fs(self.location)
         first_glob = min(fs_path.index(c) for c in GLOB_CHARS if c in fs_path)
         base = fs_path[:fs_path.rfind('/', 0, first_glob)]

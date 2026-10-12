@@ -276,7 +276,7 @@ def test_full_s3_and_hf_filenames_get_their_readers(tmp_path, processes):
 @requires_aioboto3
 def test_s3_output_with_metadata_records(tmp_path):
     metadata = tmp_path / 'urls.txt'
-    metadata.write_text('https://example.com/\n')
+    metadata.write_bytes(b'https://example.com/\n')
     s3 = FakeS3Client()
     with patch('aioboto3.Session') as session, \
             patch('cdx_toolkit.repackage.data_classes.myrequests_get', side_effect=fake_get):
