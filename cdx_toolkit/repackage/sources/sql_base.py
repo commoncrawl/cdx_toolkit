@@ -49,6 +49,24 @@ def surt_tld(surt: str) -> str:
     return surt.split(',', 1)[0].split(')', 1)[0]
 
 
+def domain_predicate(domain: str) -> str:
+    """Captures of the domain and its subdomains (like --domain for CDX files), e.g. for blog.example.com:
+
+        url_host_registered_domain IN ('blog.example.com', 'example.com')
+        AND (url_surtkey LIKE 'com,example,blog)%' OR url_surtkey LIKE 'com,example,blog,%')
+
+    The SURT prefixes give the exact host boundary; the registered domain, which is one of the suffixes of the
+    domain, makes the query cheaper (an equality the engines can push down)."""
+    from cdx_toolkit.indexes.patterns import domain_to_surts
+
+    surts = domain_to_surts(domain)
+    labels = surts[0][:-1].split(',')[::-1]  # canonical, e.g. without www.
+    suffixes = ['.'.join(labels[i:]) for i in range(len(labels) - 1)] or labels
+    registered = ', '.join(escape_sql_literal(suffix) for suffix in suffixes)
+    surt_match = ' OR '.join(f'url_surtkey {sql_like_prefix(surt)}' for surt in surts)
+    return f'(url_host_registered_domain IN ({registered}) AND ({surt_match}))'
+
+
 def build_where_sql(
     url_host_names: Optional[List[str]] = None,
     crawls: Optional[List[str]] = None,
@@ -60,9 +78,9 @@ def build_where_sql(
     """Build the WHERE body (without the `WHERE` keyword) shared by all SQL engines.
 
     The guided filter matches on `url_host_name` (exact host, e.g. www.example.com),
-    `url_host_registered_domain` (e.g. example.com, which also covers its subdomains)
-    and/or `url_surtkey` (SURT keys of URL patterns: `url_surtkey_prefixes` match all
-    keys starting with them, `url_surtkeys` exactly); predicates are OR-ed together.
+    domains with their subdomains (see domain_predicate) and/or `url_surtkey` (SURT keys
+    of URL patterns: `url_surtkey_prefixes` match all keys starting with them,
+    `url_surtkeys` exactly); predicates are OR-ed together.
     At least one host, domain or SURT key is required. If `crawls` is a non-empty list
     of crawl names (e.g. ['CC-MAIN-2025-33']), a `crawl IN (...)` partition filter is
     added -- the main lever for reducing scan cost. `conditions` are further (already
@@ -80,7 +98,7 @@ def build_where_sql(
     query_tlds = ' OR '.join(f'url_host_tld = {escape_sql_literal(t)}' for t in sorted(tlds))
 
     host_predicates = [f'url_host_name = {escape_sql_literal(h)}' for h in url_host_names]
-    host_predicates += [f'url_host_registered_domain = {escape_sql_literal(d)}' for d in domains]
+    host_predicates += [domain_predicate(d) for d in domains]
     host_predicates += [f'url_surtkey = {quote_sql_string(s)}' for s in surts]
     host_predicates += [f'url_surtkey {sql_like_prefix(s)}' for s in surt_prefixes]
     query_hosts = ' OR '.join(host_predicates)

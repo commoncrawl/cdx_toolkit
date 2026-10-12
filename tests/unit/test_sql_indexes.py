@@ -107,7 +107,9 @@ def test_duckdb_guided_query_prunes_crawls():
     assert n_crawls == 1
     assert "read_parquet(['s3://bucket/index/crawl=CC-MAIN-2024-33/subset=warc/*.parquet']" in sql
     assert 'crawl IN' not in sql  # pruned by the glob
-    assert "url_host_name = 'www.example.com' OR url_host_registered_domain = 'example.org'" in sql
+    assert ("url_host_name = 'www.example.com' OR (url_host_registered_domain IN ('example.org') "
+            "AND (url_surtkey LIKE 'org,example)%' ESCAPE '\\' "
+            "OR url_surtkey LIKE 'org,example,%' ESCAPE '\\'))") in sql
     assert 'url_surtkey, fetch_time, url,' in sql
     assert sql.rstrip().endswith('LIMIT 5')
 
@@ -117,7 +119,8 @@ def test_guided_query_url_patterns():
     sql, _ = AthenaBackend(ATHENA).prepare(query)
 
     assert "(url_host_tld = 'com' OR url_host_tld = 'net' OR url_host_tld = 'org')" in sql
-    assert ("(url_host_registered_domain = 'example.com' OR url_surtkey = 'org,example)/' "
+    assert ("((url_host_registered_domain IN ('example.com') AND (url_surtkey LIKE 'com,example)%' ESCAPE '\\' "
+            "OR url_surtkey LIKE 'com,example,%' ESCAPE '\\')) OR url_surtkey = 'org,example)/' "
             "OR url_surtkey LIKE 'com,example)/a\\_b%' ESCAPE '\\' "
             "OR url_surtkey LIKE 'net,example)%' ESCAPE '\\' OR url_surtkey LIKE 'net,example,%' ESCAPE '\\')") in sql
 
@@ -253,15 +256,15 @@ def test_index_duckdb_time_range_and_language(tmp_path, capsys):
         ('https://example.com/d', '2024-08-04 12:00:00', None),
     ]
     values = ', '.join(
-        f"('{url}', TIMESTAMPTZ '{t}+00', {repr(lang) if lang else 'NULL'}, 'example.com', 'example.com', 'com', "
-        f"'a.warc.gz', {i}, 100)"
+        f"('{url}', 'com,example)/{url[-1]}', TIMESTAMPTZ '{t}+00', {repr(lang) if lang else 'NULL'}, 'example.com', "
+        f"'example.com', 'com', 'a.warc.gz', {i}, 100)"
         for i, (url, t, lang) in enumerate(rows)
     )
     duckdb.connect().execute(f'''
-        COPY (SELECT *, NULL::VARCHAR AS url_surtkey, NULL::VARCHAR AS content_mime_type,
+        COPY (SELECT *, NULL::VARCHAR AS content_mime_type,
                      NULL::VARCHAR AS content_mime_detected, NULL::SMALLINT AS fetch_status,
                      NULL::VARCHAR AS content_digest, NULL::VARCHAR AS content_charset, NULL::VARCHAR AS fetch_redirect
-              FROM (VALUES {values}) AS t(url, fetch_time, content_languages, url_host_registered_domain,
+              FROM (VALUES {values}) AS t(url, url_surtkey, fetch_time, content_languages, url_host_registered_domain,
                     url_host_name, url_host_tld, warc_filename, warc_record_offset, warc_record_length))
         TO '{path}/part-0.parquet' (FORMAT parquet)
     ''')

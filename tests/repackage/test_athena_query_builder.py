@@ -45,7 +45,7 @@ def test_build_query_hostnames():
 
 def test_build_query_domains_only():
     q = build_athena_query(url_host_registered_domains=['example.com'])
-    assert "url_host_registered_domain = 'example.com'" in q
+    assert "url_host_registered_domain IN ('example.com')" in q
     assert "url_host_tld = 'com'" in q
     assert 'url_host_name' not in q
 
@@ -53,7 +53,7 @@ def test_build_query_domains_only():
 def test_build_query_hostnames_and_domains():
     q = build_athena_query(['www.example.com'], url_host_registered_domains=['example.org'])
     assert "url_host_name = 'www.example.com'" in q
-    assert "url_host_registered_domain = 'example.org'" in q
+    assert "url_host_registered_domain IN ('example.org')" in q
     assert "url_host_tld = 'com'" in q
     assert "url_host_tld = 'org'" in q
 
