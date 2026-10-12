@@ -11,8 +11,10 @@ Defaults for cdxt's requests to S3, as recommended by Common Crawl for downloadi
       (multipart_threshold = multipart_chunksize = 10GB: no multipart transfers)
 
 The user stays in control: a default is only used for a setting that is not configured in the
-environment (AWS_REGION / AWS_DEFAULT_REGION, AWS_RETRY_MODE, AWS_MAX_ATTEMPTS) or in the AWS config
-file of the active profile (~/.aws/config, AWS_PROFILE). CDXT_AWS_DEFAULTS=0 disables all defaults.
+environment (AWS_REGION / AWS_DEFAULT_REGION, AWS_RETRY_MODE, AWS_MAX_ATTEMPTS), in the AWS config
+file of the active profile (~/.aws/config, AWS_PROFILE) or explicitly (e.g. the retries in the fsspec
+configuration). CDXT_AWS_DEFAULTS=0 disables all defaults. The region is, in this order: an explicit
+region, AWS_REGION (which botocore itself ignores), AWS_DEFAULT_REGION, the profile, the default.
 
 The multipart settings are for whole-file transfers (`aws s3 cp`): cdxt reads WARC records with one
 range request each and reads index files sequentially, so it makes no multipart downloads anyway.
@@ -34,7 +36,7 @@ DEFAULT_MAX_ATTEMPTS = 100000  # total attempts, as `max_attempts` in the AWS co
 DEFAULT_S3 = {'addressing_style': 'virtual', 'payload_signing_enabled': False}
 DEFAULT_MAX_CONCURRENT_REQUESTS = 2
 
-# environment variables that configure a setting (botocore reads them itself)
+# environment variables that configure a setting (botocore reads them itself, except AWS_REGION)
 SETTING_ENV_VARS = {
     'region': ('AWS_REGION', 'AWS_DEFAULT_REGION'),
     'retry_mode': ('AWS_RETRY_MODE',),
@@ -69,14 +71,20 @@ def user_s3_setting(name: str):
     return s3.get(name) if isinstance(s3, dict) else None
 
 
+# the retry settings that bound the number of attempts (botocore prefers total_max_attempts)
+RETRY_BOUNDS = ('max_attempts', 'total_max_attempts')
+
+
 def botocore_config_kwargs() -> dict:
     """kwargs for botocore.config.Config with the defaults for the settings the user did not configure.
 
     botocore merges the `retries` and `s3` settings key by key with the environment and the AWS
     config file, so the settings the user configured keep their values."""
-    if not defaults_enabled():
-        return {}
     kwargs = {}
+    if os.environ.get('AWS_REGION'):
+        kwargs['region_name'] = os.environ['AWS_REGION']  # botocore only reads AWS_DEFAULT_REGION
+    if not defaults_enabled():
+        return kwargs
     if not user_configured('region'):
         kwargs['region_name'] = DEFAULT_REGION
     retries = {}
@@ -92,16 +100,32 @@ def botocore_config_kwargs() -> dict:
     return kwargs
 
 
+def merge_config_kwargs(defaults: dict, explicit: dict) -> dict:
+    """Explicit botocore config kwargs win over the defaults; the `retries` and `s3` dicts are merged key by key,
+    and an explicit bound of the attempts (max_attempts or total_max_attempts) replaces the default one."""
+    merged = dict(defaults)
+    for key, value in explicit.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            default = dict(merged[key])
+            if key == 'retries' and any(bound in value for bound in RETRY_BOUNDS):
+                for bound in RETRY_BOUNDS:
+                    default.pop(bound, None)
+            merged[key] = {**default, **value}
+        else:
+            merged[key] = value
+    return merged
+
+
 def botocore_config(region_name: Optional[str] = None, **kwargs):
-    """A botocore Config with the defaults, plus the given (non-default) options, e.g. timeouts.
+    """A botocore Config with the defaults, plus the given options, e.g. timeouts (they win over the defaults).
 
     An explicit `region_name` wins over the default and the user's configuration."""
     from botocore.config import Config
 
-    config_kwargs = botocore_config_kwargs()
+    config_kwargs = merge_config_kwargs(botocore_config_kwargs(), kwargs)
     if region_name:
         config_kwargs['region_name'] = region_name
-    return Config(**config_kwargs, **kwargs)
+    return Config(**config_kwargs)
 
 
 def max_concurrent_requests() -> int:
@@ -119,12 +143,7 @@ def configure_fsspec_s3() -> None:
     import fsspec.config
 
     conf = fsspec.config.conf.setdefault('s3', {})
-    config_kwargs = dict(conf.get('config_kwargs') or {})
-    for key, value in botocore_config_kwargs().items():
-        if isinstance(value, dict) and isinstance(config_kwargs.get(key), dict):
-            config_kwargs[key] = {**value, **config_kwargs[key]}
-        else:
-            config_kwargs.setdefault(key, value)
+    config_kwargs = merge_config_kwargs(botocore_config_kwargs(), dict(conf.get('config_kwargs') or {}))
     if config_kwargs:
         conf['config_kwargs'] = config_kwargs
     conf.setdefault('max_concurrency', max_concurrent_requests())

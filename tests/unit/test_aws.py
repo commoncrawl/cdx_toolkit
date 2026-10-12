@@ -184,3 +184,56 @@ def test_invalid_region(no_user_config, monkeypatch):
         aws.aws_region()
     with pytest.raises(ValueError, match='invalid AWS region'):
         aws.duckdb_settings()
+
+
+def s3_client(config=None):
+    """A real botocore S3 client (no requests are sent), to check the configuration botocore resolves."""
+    import botocore.session
+
+    session = botocore.session.Session()
+    return session.create_client('s3', config=config, aws_access_key_id='x', aws_secret_access_key='x')
+
+
+@pytest.mark.parametrize('env, region', [
+    ({}, 'us-east-1'),
+    ({'AWS_REGION': 'eu-west-1'}, 'eu-west-1'),
+    ({'AWS_DEFAULT_REGION': 'eu-central-1'}, 'eu-central-1'),
+    ({'AWS_REGION': 'eu-west-1', 'AWS_DEFAULT_REGION': 'eu-central-1'}, 'eu-west-1'),
+    ({'AWS_REGION': 'eu-west-1', 'CDXT_AWS_DEFAULTS': '0'}, 'eu-west-1'),
+])
+def test_effective_region(no_user_config, monkeypatch, env, region):
+    pytest.importorskip('botocore')
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    assert s3_client(aws.botocore_config()).meta.region_name == region
+    # an explicit region wins
+    assert s3_client(aws.botocore_config(region_name='ap-south-1')).meta.region_name == 'ap-south-1'
+
+
+def test_effective_region_of_the_profile(no_user_config, monkeypatch, tmp_path):
+    pytest.importorskip('botocore')
+    (tmp_path / 'aws-config').write_text('[default]\nregion = sa-east-1\n')
+    with patch.object(aws, 'user_aws_config', return_value={'region': 'sa-east-1'}):
+        assert s3_client(aws.botocore_config()).meta.region_name == 'sa-east-1'
+
+
+@pytest.mark.parametrize('retries, expected', [
+    ({'max_attempts': 3}, {'mode': 'adaptive', 'total_max_attempts': 4}),  # botocore: max_attempts = retries
+    ({'total_max_attempts': 3}, {'mode': 'adaptive', 'total_max_attempts': 3}),
+    ({'mode': 'standard'}, {'mode': 'standard', 'total_max_attempts': 100000}),
+])
+def test_effective_explicit_retries(no_user_config, retries, expected):
+    pytest.importorskip('botocore')
+    assert s3_client(aws.botocore_config(retries=retries)).meta.config.retries == expected
+
+
+@pytest.mark.parametrize('retries, expected', [
+    ({'max_attempts': 3}, {'mode': 'adaptive', 'max_attempts': 3}),
+    ({'total_max_attempts': 3}, {'mode': 'adaptive', 'total_max_attempts': 3}),
+])
+def test_fsspec_retries_of_the_user_win(no_user_config, monkeypatch, retries, expected):
+    import fsspec.config
+
+    monkeypatch.setattr(fsspec.config, 'conf', {'s3': {'config_kwargs': {'retries': retries}}})
+    aws.configure_fsspec_s3()
+    assert fsspec.config.conf['s3']['config_kwargs']['retries'] == expected
