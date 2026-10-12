@@ -8,7 +8,9 @@ from cdx_toolkit.cli import main
 from cdx_toolkit.indexes import IndexQuery, UsageError, resolve_index
 from cdx_toolkit.indexes.cdx_api import CdxApiBackend
 from cdx_toolkit.indexes.cdx_files import CdxFilesBackend
-from cdx_toolkit.indexes.sql import AthenaBackend, check_language, DuckDbBackend, normalize_row, parse_athena_location
+from cdx_toolkit.indexes.sql import (
+    AthenaBackend, check_language, DuckDbBackend, normalize_row, parse_athena_location, query_conditions,
+)
 
 from tests.conftest import requires_duckdb
 
@@ -130,7 +132,7 @@ def test_guided_query_time_range_and_languages():
     sql, _ = AthenaBackend(ATHENA).prepare(query)
 
     assert "fetch_time >= TIMESTAMP '2024-01-01 00:00:00'" in sql
-    assert "fetch_time <= TIMESTAMP '2024-04-10 23:59:59'" in sql
+    assert "fetch_time < TIMESTAMP '2024-04-11 00:00:00'" in sql
     assert ("(content_languages = 'deu' OR content_languages LIKE 'deu,%' "
             "OR content_languages = 'fra' OR content_languages LIKE 'fra,%')") in sql
 
@@ -336,3 +338,26 @@ def test_sql_without_url_column_to_repackage(parquet_index, tmp_path, capsys):
         main(['index', files, '--sql', str(sql), '--yes', '--url-fgrep', 'example'])
     assert exc.value.code == 2
     assert '--url-fgrep and --url-fgrepv need captures with a url' in capsys.readouterr().err
+
+
+@requires_duckdb
+@pytest.mark.parametrize('to, included', [
+    ('20240801', ['23:59:59.500']),
+    ('20240801235959', ['23:59:59.500']),
+    ('2024080123595', ['23:59:59.500']),
+    ('20240802', ['23:59:59.500', 'next day']),
+])
+def test_end_timestamp_includes_fractional_seconds(to, included):
+    import duckdb
+
+    rows = {'23:59:59.500': '2024-08-01 23:59:59.500', 'next day': '2024-08-02 00:00:00'}
+    con = duckdb.connect()
+    con.execute('CREATE TABLE t (name VARCHAR, fetch_time TIMESTAMP)')
+    con.executemany('INSERT INTO t VALUES (?, ?)', list(rows.items()))
+    condition, = query_conditions(IndexQuery(to=to))
+    assert sorted(r[0] for r in con.execute(f'SELECT name FROM t WHERE {condition}').fetchall()) == included
+
+
+def test_end_timestamp_overflow():
+    with pytest.raises(UsageError, match='invalid timestamp'):
+        query_conditions(IndexQuery(to='9999'))

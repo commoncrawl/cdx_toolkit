@@ -101,14 +101,17 @@ def normalize_row(row: Mapping) -> dict:
     return record
 
 
-def sql_timestamp(timestamp: str, up: bool = False) -> str:
-    """CDX timestamp (e.g. 2008, 200906302359) -> SQL TIMESTAMP literal of its first (or last) second."""
+def sql_timestamp(timestamp: str, end: bool = False) -> str:
+    """CDX timestamp (e.g. 2008, 200906302359) -> SQL TIMESTAMP literal of its first second, or with `end`, of the
+    second after its last second (an exclusive end, which includes the fractions of the last second)."""
     if not re.fullmatch(r'\d{4,14}', timestamp):
         raise UsageError(f'invalid timestamp {timestamp!r}, use e.g. 2008, 20080328 or 200906302359')
-    padded = pad_timestamp_up(timestamp) if up else pad_timestamp(timestamp)
+    padded = pad_timestamp_up(timestamp) if end else pad_timestamp(timestamp)
     try:
         moment = datetime.datetime.strptime(padded, '%Y%m%d%H%M%S')
-    except ValueError:
+        if end:
+            moment += datetime.timedelta(seconds=1)
+    except (ValueError, OverflowError):
         raise UsageError(f'invalid timestamp {timestamp!r}') from None
     return f"TIMESTAMP '{moment:%Y-%m-%d %H:%M:%S}'"
 
@@ -137,7 +140,7 @@ def query_conditions(query: IndexQuery) -> List[str]:
     if query.from_ts:
         conditions.append(f'fetch_time >= {sql_timestamp(query.from_ts)}')
     if query.to:
-        conditions.append(f'fetch_time <= {sql_timestamp(query.to, up=True)}')
+        conditions.append(f'fetch_time < {sql_timestamp(query.to, end=True)}')
     if query.languages:
         # primary content language: the first of the comma-separated content_languages
         predicates = []
