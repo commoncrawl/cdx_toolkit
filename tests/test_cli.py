@@ -22,8 +22,8 @@ def slow_ci():
     For Github Actions, the windows and macos runners are very slow.
     Detect those runners, so that we can cut testing short.
     """
-    if os.environ.get('FAKE_GITHUB_ACTION'):
-        LOGGER.error('limiting pytest because FAKE_GITHUB_ACTION')
+    if os.environ.get('CDXT_FAKE_GITHUB_ACTION'):
+        LOGGER.error('limiting pytest because CDXT_FAKE_GITHUB_ACTION')
         return True
     if os.environ.get('GITHUB_ACTION'):
         if platform.system() in {'Darwin', 'Windows'}:

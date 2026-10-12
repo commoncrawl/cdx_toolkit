@@ -23,7 +23,7 @@ matrix:
     arch: s390x  # unreliable in travis
   include:
   - python: 3.5
-    env: LOGLEVEL=DEBUG  # same time as normal
+    env: CDXT_LOGLEVEL=DEBUG  # same time as normal
   - python: 3.8
     arch: arm64  # 50% extra runtime
   - python: 3.8

@@ -39,7 +39,7 @@ jobs:
           - python-version: '3.14'
             os: ubuntu-latest
             env:
-              LOGLEVEL=DEBUG
+              CDXT_LOGLEVEL=DEBUG
             EXTRA: true
           - python-version: '3.14'
             os: macos-latest
@@ -94,7 +94,7 @@ jobs:
             core.exportVariable('CDXT_CC_DATA_MIN_RETRY_INTERVAL', '0.01')
             core.exportVariable('CDXT_IA_MIN_RETRY_INTERVAL', '0.01')
             core.exportVariable('CDXT_DISABLE_ATHENA_TESTS', '1')
-            core.exportVariable('LOGLEVEL', 'DEBUG')
+            core.exportVariable('CDXT_LOGLEVEL', 'DEBUG')
 
       - name: Lint code
         run: |
@@ -153,7 +153,7 @@ jobs:
             core.exportVariable('CDXT_CC_DATA_MIN_RETRY_INTERVAL', '0.01')
             core.exportVariable('CDXT_IA_MIN_RETRY_INTERVAL', '0.01')
             core.exportVariable('CDXT_DISABLE_ATHENA_TESTS', '1')
-            core.exportVariable('LOGLEVEL', 'DEBUG')
+            core.exportVariable('CDXT_LOGLEVEL', 'DEBUG')
 
       - name: test minimal
         run: |

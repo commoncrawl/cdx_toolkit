@@ -2,7 +2,7 @@
 
 By default, the tests make no remote requests:
 - the CDX API and HTTP requests (data.commoncrawl.org) are mocked with `responses` and recorded data
-  (DISABLE_MOCK_RESPONSES=1 sends them to the real servers, see mock_response_from_jsonl)
+  (CDXT_DISABLE_MOCK_RESPONSES=1 sends them to the real servers, see mock_response_from_jsonl)
 - S3 is a local moto server (see the s3_env fixture and requires_aws_s3)
 
 CDXT_LIVE_TESTS=1 runs the S3 tests against AWS instead, and enables the tests that need AWS and
@@ -243,9 +243,9 @@ def _data_commoncrawl_range(request):
 @pytest.fixture
 def mock_data_commoncrawl():
     """WARC record downloads from data.commoncrawl.org are served from recorded data (unless
-    DISABLE_MOCK_RESPONSES=1); other requests made with `requests` fail, unless the test adds mock data (e.g.
+    CDXT_DISABLE_MOCK_RESPONSES=1); other requests made with `requests` fail, unless the test adds mock data (e.g.
     with mock_response_from_jsonl)."""
-    if os.environ.get('DISABLE_MOCK_RESPONSES'):
+    if os.environ.get('CDXT_DISABLE_MOCK_RESPONSES'):
         yield None
         return
     responses.start()
@@ -462,7 +462,7 @@ def mock_response_from_jsonl(mock_data_name, mock_data_dir: Optional[str] = None
     (if you run this from a whitelisted IP address), the following environment variable can be set:
 
     ```bash
-    export DISABLE_MOCK_RESPONSES=1
+    export CDXT_DISABLE_MOCK_RESPONSES=1
     ```
 
     If the remote APIs change, new mock data can be semi-automatically collected
@@ -470,10 +470,10 @@ def mock_response_from_jsonl(mock_data_name, mock_data_dir: Optional[str] = None
     and overwriting existing mock data in `tests/data/mock_responses`:
 
     ```bash
-    # set environment variable (DISABLE_MOCK_RESPONSES should not be set)
-    export SAVE_MOCK_RESPONSES=./tmp/mock_responses
+    # set environment variable (CDXT_DISABLE_MOCK_RESPONSES should not be set)
+    export CDXT_SAVE_MOCK_RESPONSES=./tmp/mock_responses
 
-    # run the test for what mock data should be saved to $SAVE_MOCK_RESPONSES/<test_file>/<test_func>.jsonl
+    # run the test for what mock data should be saved to $CDXT_SAVE_MOCK_RESPONSES/<test_file>/<test_func>.jsonl
     pytest tests/test_cli.py::test_basics
     ```
 
@@ -517,7 +517,7 @@ def mock_response_from_jsonl(mock_data_name, mock_data_dir: Optional[str] = None
 
 
 def conditional_mock_responses(func=None, *, auto_mock_data: bool = True):
-    """Conditionally applies @responses.activate and auto-loads mock data based on DISABLE_MOCK_RESPONSES env var.
+    """Conditionally applies @responses.activate and auto-loads mock data based on CDXT_DISABLE_MOCK_RESPONSES env var.
 
     The mock data is automatically loaded from JSONL file from the tests/data directory
     and dependinng on the test module and test function.
@@ -527,12 +527,12 @@ def conditional_mock_responses(func=None, *, auto_mock_data: bool = True):
     """
 
     def decorator(f):
-        # If the flag DISABLE_MOCK_RESPONSES is not detected, response mocking remains enabled
-        if not os.environ.get('DISABLE_MOCK_RESPONSES'):
+        # If the flag CDXT_DISABLE_MOCK_RESPONSES is not detected, response mocking remains enabled
+        if not os.environ.get('CDXT_DISABLE_MOCK_RESPONSES'):
             # Add responses.activate
             f = add_mock_responses(f, auto_mock_data=auto_mock_data)
 
-        if os.environ.get('SAVE_MOCK_RESPONSES'):
+        if os.environ.get('CDXT_SAVE_MOCK_RESPONSES'):
             # Mock data is saved by capturing output from requests.get
             @functools.wraps(f)
             def wrapper(*args, **kwargs):
@@ -607,7 +607,7 @@ def _custom_behavior_with_original(original_func):
                 request_url=request_url,
                 request_params=request_params,
                 resp=response,
-                output_base_dir=os.environ.get('SAVE_MOCK_RESPONSES'),
+                output_base_dir=os.environ.get('CDXT_SAVE_MOCK_RESPONSES'),
             )
 
         return response

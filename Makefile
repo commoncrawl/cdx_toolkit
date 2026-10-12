@@ -23,7 +23,7 @@ clean_coverage:
 test_coverage: clean_coverage
 	#	PYTHONPATH=. coverage run -a --source=cdx_toolkit,examples examples/iter-and-warc.py
 	# -rA to see all output, pass or fail
-	# LOGLEVEL=DEBUG
+	# CDXT_LOGLEVEL=DEBUG
 	# -vvvv -s
 	PYTHONPATH=. py.test -rA -s --doctest-modules --cov-report=xml --cov-append --cov cdx_toolkit tests -v -v
 	coverage report

@@ -6,6 +6,7 @@
 	  JSONL/CDXJ/CSV/TSV output, all fields by default, `--count` replaces `size`
 	+ `cdxt repackage`: reads captures from a file or stdin, human-readable `--size`, `--is-part-of`, `--description`
 	+ `--cc-sort` is now passed on to the CDX fetcher
+	+ the log level variable is `CDXT_LOGLEVEL` (`LOGLEVEL` still works), like cdx_toolkit's other environment variables
 	+ `cdxt index` queries Common Crawl's columnar URL index with DuckDB (`cc-url-index-s3`, `cc-url-index-hf`, `*.parquet`)
 	  or AWS Athena (`athena://...`): `--hostname`/`--domain`/`--crawl`/`--limit` or your own `--sql`, cost confirmation (`--yes`), `--dry-run`
 	+ `cdxt repackage` copies WARC records byte-for-byte with the async WARC fetcher (from the feat/warc-range-sources branch):

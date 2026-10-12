@@ -33,7 +33,7 @@ def add_verbose_arg(parser: ArgumentParser, subcommand: bool = False):
 
 
 def set_loglevel(verbose: int):
-    loglevel = os.getenv('LOGLEVEL') or 'WARNING'
+    loglevel = os.getenv('CDXT_LOGLEVEL') or os.getenv('LOGLEVEL') or 'WARNING'  # LOGLEVEL: the old name
     if verbose and verbose > 0:
         loglevel = 'INFO'
     if verbose and verbose > 1:
