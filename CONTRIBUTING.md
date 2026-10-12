@@ -46,6 +46,8 @@ The S3 tests run against AWS, and the tests that need AWS and cannot be mocked (
 export CDXT_LIVE_TESTS=1
 ```
 
+The CI workflow of pull requests runs the mocked tests only; the `CI-slow` workflow (started manually) runs the live tests with AWS credentials.
+
 The WARC records that the `cdxt repackage` tests download (from `data.commoncrawl.org` or `s3://commoncrawl`) are recorded in `tests/data/repackage/warc_records.jsonl`, and DuckDB queries a small local index built from the same captures (the `local_url_index` fixture in `tests/conftest.py`).
 
 If the remote APIs change, new mock data can be semi-automatically collected by setting another environment variable,  running corresponding unit tests, and overwriting existing mock data in `tests/data/mock_responses`:

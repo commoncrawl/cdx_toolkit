@@ -2,6 +2,12 @@ name: CI-slow
 
 on: workflow_dispatch
 
+# live tests (CDXT_LIVE_TESTS=1): S3, Athena and DuckDB against AWS. The permissions are needed to get AWS
+# credentials via GitHub's OIDC token endpoint
+permissions:
+  id-token: write
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   # 'queue: max' ensures old runs finish in order instead of being canceled
@@ -42,8 +48,16 @@ jobs:
           pip install setuptools
 
       - name: Install cdx_toolkit
-        run: pip install .[test]
+        run: pip install .[all]
+
+      - name: Configure AWS credentials from OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::837454214164:role/GitHubActions-Role
+          aws-region: us-east-1
 
       - name: Run tests
+        env:
+          CDXT_LIVE_TESTS: '1'
         run: |
           make test_coverage

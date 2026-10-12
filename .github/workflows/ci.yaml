@@ -8,9 +8,8 @@ on:
     branches:
     - main
 
-# These permissions are needed to interact with AWS S3 via GitHub's OIDC Token endpoint
+# the tests make no remote requests (they are mocked); the live tests run in ci-slow.yaml
 permissions:
-  id-token: write
   contents: read
   pull-requests: read
 
@@ -69,13 +68,6 @@ jobs:
 
       - name: Install cdx_toolkit
         run: pip install .[all]
-
-      - name: Configure AWS credentials from OIDC (disabled for forks)
-        if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push'
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: arn:aws:iam::837454214164:role/GitHubActions-Role
-          aws-region: us-east-1
 
       - name: Disable S3 unit tests for Python 3.8 (botocore requires Python 3.9+)
         if: ${{ startsWith(matrix.python-version, '3.8') }}
