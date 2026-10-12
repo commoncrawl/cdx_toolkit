@@ -316,6 +316,7 @@ def test_s3_reads_check_the_length():
 
 
 def test_no_s3_client_without_s3(tmp_path):
+    pytest.importorskip('aioboto3')
     with patch('aioboto3.Session') as session, \
             patch('cdx_toolkit.repackage.data_classes.myrequests_get', side_effect=fake_get):
         WARCFilter(source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'),
