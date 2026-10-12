@@ -23,6 +23,8 @@ import time
 from typing import Tuple
 from urllib.parse import parse_qs, urlparse
 
+from cdx_toolkit.repackage.http_range import check_range_response
+
 logger = logging.getLogger(__name__)
 
 HF_SCHEME = 'hf://'
@@ -221,8 +223,9 @@ class HfHttpReader:
                         body = await resp.read()
                         raise OSError(f'HF GET {resolve} -> {resp.status}: {body[:200]!r}')
                     data = await resp.read()
-                if len(data) != length:
-                    raise OSError(f'HF GET {resolve} returned {len(data)} bytes, expected {length}')
+                    check_range_response(
+                        resp.status, resp.headers.get('Content-Range'), len(data), offset, length, resolve
+                    )
                 self.read_count += 1
                 return data
             except Exception:  # noqa: BLE001 - retry any transient read error

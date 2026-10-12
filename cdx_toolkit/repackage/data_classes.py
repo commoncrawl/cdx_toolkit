@@ -6,6 +6,7 @@ from cdx_toolkit.repackage.hf_utils import is_hf_url
 from typing import Optional, Tuple
 
 from cdx_toolkit.myrequests import myrequests_get
+from cdx_toolkit.repackage.http_range import RangeError, check_range_response
 
 
 @dataclass
@@ -105,7 +106,10 @@ class RangeJob:
                 max_attempts=max_attempts,
                 base_backoff_seconds=base_backoff_seconds,
             )
-            return await resp['Body'].read()
+            data = await resp['Body'].read()
+            if len(data) != length:
+                raise RangeError(f'{self.url}: requested {length} bytes from offset {offset}, got {len(data)}')
+            return data
 
         elif self.is_hf():
             # read from a Hugging Face bucket (hf://) via the configured HF reader
@@ -124,6 +128,9 @@ class RangeJob:
             headers = {'Range': 'bytes={}-{}'.format(offset, end)}
 
             resp = myrequests_get(self.url, headers=headers)
+            check_range_response(
+                resp.status_code, resp.headers.get('Content-Range'), len(resp.content), offset, length, self.url
+            )
             return resp.content
 
 

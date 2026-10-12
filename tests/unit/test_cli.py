@@ -30,6 +30,15 @@ def _make_fake_record():
     )
 
 
+RECORD = cdx_toolkit.repackage.warc_utils.get_bytes_from_warc_record(_make_fake_record(), gzip=True)
+
+
+def _range_response(offset=10):
+    """The response to a range request for RECORD at `offset` of a WARC file."""
+    content_range = f'bytes {offset}-{offset + len(RECORD) - 1}/*'
+    return Mock(status_code=206, headers={'Content-Range': content_range}, content=RECORD)
+
+
 def _write_captures(path, captures):
     path.write_text(''.join(json.dumps(c) + '\n' for c in captures))
     return str(path)
@@ -38,7 +47,7 @@ def _write_captures(path, captures):
 IA_CAPTURE = {'url': 'http://example.com', 'timestamp': '20240101120000', 'status': '200', 'mime': 'text/html'}
 CC_CAPTURE = {
     'url': 'http://example.com', 'timestamp': '20240101120000', 'status': '200',
-    'filename': 'crawl-data/x.warc.gz', 'offset': '10', 'length': '20',
+    'filename': 'crawl-data/x.warc.gz', 'offset': '10', 'length': str(len(RECORD)),
 }
 
 
@@ -55,19 +64,15 @@ def test_repackage_with_wb_logs_revisit(tmp_path, caplog):
     assert list(tmp_path.glob('out-*.warc.gz'))
 
 
-def _gzipped_warc_record():
-    return cdx_toolkit.repackage.warc_utils.get_bytes_from_warc_record(_make_fake_record(), gzip=True)
-
-
 def test_repackage_fetches_by_warc_location(tmp_path):
     captures = _write_captures(tmp_path / 'captures.jsonl', [CC_CAPTURE])
-    resp = Mock(content=_gzipped_warc_record())
+    resp = _range_response()
 
     with patch('cdx_toolkit.repackage.data_classes.myrequests_get', return_value=resp) as get:
         main(['repackage', captures, '--prefix', str(tmp_path / 'out'), '--warc-download-prefix', 'https://x.org/'])
 
     assert get.call_args.args == ('https://x.org/crawl-data/x.warc.gz',)
-    assert get.call_args.kwargs == {'headers': {'Range': 'bytes=10-29'}}
+    assert get.call_args.kwargs == {'headers': {'Range': f'bytes=10-{9 + len(RECORD)}'}}
 
     with open(tmp_path / 'out-001.warc.gz', 'rb') as f:
         records = list(ArchiveIterator(f))
@@ -97,7 +102,7 @@ def test_repackage_default_prefix(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     captures = _write_captures(tmp_path / 'captures.jsonl', [CC_CAPTURE])
 
-    with patch('cdx_toolkit.repackage.data_classes.myrequests_get', return_value=Mock(content=_gzipped_warc_record())):
+    with patch('cdx_toolkit.repackage.data_classes.myrequests_get', return_value=_range_response()):
         main(['repackage', captures])
 
     assert [p.name for p in tmp_path.glob('*.warc.gz')] == ['REPACKAGE-001.warc.gz']
@@ -114,7 +119,7 @@ def test_index_to_parquet_and_repackage(tmp_path, capsys):
         main(['index', 'cc', '--url', 'example.com/*', '--output-format', 'parquet'])
     assert 'cannot be written to stdout' in capsys.readouterr().err
 
-    with patch('cdx_toolkit.repackage.data_classes.myrequests_get', return_value=Mock(content=_gzipped_warc_record())):
+    with patch('cdx_toolkit.repackage.data_classes.myrequests_get', return_value=_range_response()):
         main(['repackage', str(captures), '--prefix', str(tmp_path / 'out')])
     with open(tmp_path / 'out-001.warc.gz', 'rb') as f:
         assert [r.rec_type for r in ArchiveIterator(f)] == ['warcinfo', 'response']
@@ -251,7 +256,7 @@ def test_verbose_before_and_after_subcommand(tmp_path):
 
 @pytest.mark.parametrize('n_failing', [1, 2])
 def test_repackage_exits_1_if_captures_could_not_be_fetched(tmp_path, capsys, n_failing):
-    captures = [dict(CC_CAPTURE, offset=str(i)) for i in range(2)]
+    captures = [dict(CC_CAPTURE, offset=str(i * len(RECORD))) for i in range(2)]
     path = _write_captures(tmp_path / 'captures.jsonl', captures)
     calls = []
 
@@ -259,7 +264,7 @@ def test_repackage_exits_1_if_captures_could_not_be_fetched(tmp_path, capsys, n_
         calls.append(url)
         if len(calls) <= n_failing:
             raise ConnectionError('network down')
-        return Mock(content=_gzipped_warc_record())
+        return _range_response(offset=int(headers['Range'][len('bytes='):].split('-')[0]))
 
     with patch('cdx_toolkit.repackage.data_classes.myrequests_get', side_effect=get), \
             pytest.raises(SystemExit) as exc:
@@ -271,7 +276,7 @@ def test_repackage_exits_1_if_captures_could_not_be_fetched(tmp_path, capsys, n_
 
 def test_repackage_fails_if_the_output_cannot_be_created(tmp_path):
     path = _write_captures(tmp_path / 'captures.jsonl', [CC_CAPTURE])
-    response = Mock(content=_gzipped_warc_record())
+    response = _range_response()
     with patch('cdx_toolkit.repackage.data_classes.myrequests_get', return_value=response), \
             patch('cdx_toolkit.repackage.local_writer.aiofiles.open', side_effect=PermissionError('read-only')), \
             pytest.raises(PermissionError):

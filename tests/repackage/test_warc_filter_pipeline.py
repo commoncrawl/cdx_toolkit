@@ -5,12 +5,10 @@ import glob
 import itertools
 import os
 import threading
-from io import BytesIO
 from unittest.mock import Mock, patch
 
 import fsspec
 import pytest
-from warcio import WARCWriter
 from warcio.archiveiterator import ArchiveIterator
 
 from cdx_toolkit.repackage import multiprocess
@@ -18,22 +16,20 @@ from cdx_toolkit.repackage.data_classes import RangeJob, RepackageResult
 from cdx_toolkit.repackage.local_writer import LocalFileWriter
 from cdx_toolkit.repackage.sources.records import RecordsSource
 from cdx_toolkit.repackage.warc_filter import WARCFilter
-from cdx_toolkit.repackage.warc_utils import get_bytes_from_warc_record
+from tests.fake_warc_server import FakeWarcServer
 
 
-def warc_record_bytes(url):
-    record = WARCWriter(None).create_warc_record(url, 'resource', payload=BytesIO(b'content of ' + url.encode()))
-    return get_bytes_from_warc_record(record, gzip=True)
+def make_server():
+    """Four captures in two WARC files."""
+    server = FakeWarcServer('https://data.example.org')
+    captures = []
+    for i in range(4):
+        captures += server.add_captures(f'crawl-data/{i % 2}.warc.gz', [f'https://example.com/{i}'])
+    return server, captures
 
 
-CAPTURES = [
-    {'url': f'https://example.com/{i}', 'filename': f'crawl-data/{i % 2}.warc.gz', 'offset': str(i), 'length': '1'}
-    for i in range(4)
-]
-
-
-def fake_get(url, headers=None, **kwargs):
-    return Mock(content=warc_record_bytes(url + '#' + headers['Range']))
+SERVER, CAPTURES = make_server()
+fake_get = SERVER.get
 
 
 def response_records(paths):
@@ -58,6 +54,25 @@ def test_failed_captures_are_counted_and_the_others_written(tmp_path):
     with patch('cdx_toolkit.repackage.data_classes.myrequests_get', side_effect=flaky_get):
         assert wf.filter() == RepackageResult(requested=4, written=3, failed=1)
     assert len(response_records(glob.glob(str(tmp_path / 'out-*.warc.gz')))) == 3
+
+
+@pytest.mark.parametrize('response', [
+    Mock(status_code=200, headers={}, content=b'x' * 100),  # range ignored
+    Mock(status_code=301, headers={'Location': 'https://elsewhere.example.org/'}, content=b''),  # redirect
+    Mock(status_code=206, headers={'Content-Range': 'bytes 0-0/100'}, content=b'x'),  # truncated / wrong range
+    'wrong-range',
+])
+def test_invalid_range_responses_are_not_written(tmp_path, response):
+    capture = CAPTURES[1]  # offset > 0
+    offset, length = int(capture['offset']), int(capture['length'])
+    if response == 'wrong-range':
+        response = Mock(status_code=206, headers={'Content-Range': f'bytes {offset + 1}-{offset + length}/9999'},
+                        content=b'x' * length)
+    wf = WARCFilter(source=RecordsSource([capture], 'https://data.example.org'), prefix_path=str(tmp_path / 'out'),
+                    writer_info={})
+    with patch('cdx_toolkit.repackage.data_classes.myrequests_get', return_value=response):
+        assert wf.filter() == RepackageResult(requested=1, written=0, failed=1)
+    assert glob.glob(str(tmp_path / 'out-*')) == []
 
 
 def test_writer_error_stops_the_pipeline_and_removes_the_file(tmp_path):
@@ -137,7 +152,7 @@ def test_cancellation_with_a_full_queue_and_a_blocked_reader(tmp_path):
 def test_hf_reads_use_the_hf_reader(tmp_path):
     class FakeHfReader:
         async def ranged_get(self, url, offset, length, **kwargs):
-            return warc_record_bytes(f'{url}#{offset}')
+            return SERVER.files[url.split('/', 5)[-1]][offset:offset + length]
 
     @contextlib.asynccontextmanager
     async def fake_make_hf_reader():
@@ -149,7 +164,7 @@ def test_hf_reads_use_the_hf_reader(tmp_path):
     with patch('cdx_toolkit.repackage.warc_filter.make_hf_reader', fake_make_hf_reader):
         assert wf.filter().written == 4
     records = response_records(glob.glob(str(tmp_path / 'out-*.warc.gz')))
-    assert records[0].rec_headers.get_header('WARC-Target-URI').startswith('hf://buckets/commoncrawl/commoncrawl/')
+    assert sorted(r.rec_headers.get_header('WARC-Target-URI') for r in records) == sorted(c['url'] for c in CAPTURES)
 
 
 @pytest.mark.parametrize('uvloop_installed', [True, False])

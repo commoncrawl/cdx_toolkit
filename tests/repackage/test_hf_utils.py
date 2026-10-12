@@ -113,7 +113,8 @@ class FakeSession:
         if self.get_statuses:
             return FakeResponse(self.get_statuses.pop(0))
         start, end = map(int, headers['Range'][len('bytes='):].split('-'))
-        return FakeResponse(206, body=DATA[start:end + 1])
+        body = DATA[start:end + 1]
+        return FakeResponse(206, {'Content-Range': f'bytes {start}-{start + len(body) - 1}/{len(DATA)}'}, body)
 
 
 def _read(reader, url, offset, length):
@@ -213,7 +214,7 @@ def test_resolve_errors_are_retried_then_raised():
     'get_statuses, offset, length, error',
     [
         ([500, 500, 500], 0, 4, 'HF GET .* -> 500'),
-        ([], 1000, 100, 'returned 24 bytes, expected 100'),  # short read
+        ([], 1000, 100, 'requested bytes 1000-1099, got Content-Range'),  # short read
     ],
 )
 def test_read_errors_are_retried_then_raised(get_statuses, offset, length, error):
