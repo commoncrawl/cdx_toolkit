@@ -61,7 +61,19 @@ def indexes(tmp_path_factory):
     (['--domain', 'blog.example.com'], ['https://a.blog.example.com/', 'https://blog.example.com/']),
     (['--domain', 'a.blog.example.com'], ['https://a.blog.example.com/']),
     (['--domain', 'example.com.au'], ['https://example.com.au/']),
+    (['--domain', 'Example.COM.'], [
+        'https://a.blog.example.com/', 'https://ablog.example.com/', 'https://blog.example.com/',
+        'https://example.com/', 'https://www.example.com/w',
+    ]),
     (['--hostname', 'blog.example.com'], ['https://blog.example.com/']),
+    # exact hosts, also with www. (which SURT keys drop)
+    (['--hostname', 'example.com'], ['https://example.com/']),
+    (['--hostname', 'www.example.com'], ['https://www.example.com/w']),
+    (['--hostname', 'WWW.Example.com'], ['https://www.example.com/w']),
+    (['--hostname', 'www.example.com', '--url', 'blog.example.com/*'],
+     ['https://blog.example.com/', 'https://www.example.com/w']),
+    (['--hostname', 'www.example.com', '--domain', 'example.com.au'],
+     ['https://example.com.au/', 'https://www.example.com/w']),
     (['--url', '*.blog.example.com'], ['https://a.blog.example.com/', 'https://blog.example.com/']),
     (['--url', 'blog.example.com/*'], ['https://blog.example.com/']),
 ])

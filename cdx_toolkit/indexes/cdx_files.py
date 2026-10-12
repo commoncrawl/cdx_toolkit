@@ -16,7 +16,8 @@ from cdx_toolkit.timeutils import pad_timestamp, pad_timestamp_up
 
 from .base import IndexBackend, UsageError
 from .patterns import (  # noqa: F401 (url_pattern_to_surts, to_surt)
-    domain_entry_to_surts, domain_to_surts, hostname_to_surts, to_surt, url_pattern_to_surts,
+    domain_entry_to_surts, domain_to_surts, hostname_to_surts, normalize_host, to_surt, url_hostname,
+    url_pattern_to_surts,
 )
 from .query import IndexQuery
 
@@ -58,6 +59,10 @@ class CaptureFilter:
 
     prefixes: Tuple[str, ...] = ()
     exact: Tuple[str, ...] = ()
+    # --hostname: the SURT prefixes select the candidates (with and without www.), the URL's host must be one of
+    # the hostnames
+    host_prefixes: Tuple[str, ...] = ()
+    hostnames: Tuple[str, ...] = ()
     select_all: bool = False
     from_ts: Optional[str] = None
     to: Optional[str] = None
@@ -68,7 +73,7 @@ class CaptureFilter:
     def from_query(cls, query: IndexQuery, url_filters: bool = False) -> 'CaptureFilter':
         """The selection of the query; --url-fgrep/--url-fgrepv only with `url_filters` (one output per file:
         without --limit, they can be applied while reading; otherwise they are applied after the limit)."""
-        prefixes, exact = [], []
+        prefixes, exact, host_prefixes = [], [], []
         patterns = list(query.urls)
         if query.url_file:
             entries = load_url_patterns(query.url_file, query.url_column)
@@ -83,12 +88,14 @@ class CaptureFilter:
             prefixes += p
             exact += e
         for hostname in query.hostnames:
-            prefixes += hostname_to_surts(hostname)
+            host_prefixes += hostname_to_surts(hostname)
         for domain in query.domains:
             prefixes += domain_to_surts(domain)
         return cls(
             prefixes=tuple(prefixes),
             exact=tuple(exact),
+            host_prefixes=tuple(host_prefixes),
+            hostnames=tuple(normalize_host(hostname) for hostname in query.hostnames),
             select_all=not (query.urls or query.url_file or query.hostnames or query.domains),
             from_ts=pad_timestamp(query.from_ts) if query.from_ts else None,
             to=pad_timestamp_up(query.to) if query.to else None,
@@ -109,11 +116,23 @@ class LineMatcher:
         self.prefixes = None
         if capture_filter.prefixes:
             self.prefixes = SURTMatcher(list(capture_filter.prefixes), match_subdomains=False)
+        self.host_prefixes = None
+        if capture_filter.host_prefixes:
+            self.host_prefixes = SURTMatcher(list(capture_filter.host_prefixes), match_subdomains=False)
+        self.hostnames = set(capture_filter.hostnames)
+
+    def selected(self, key: str, line: str) -> bool:
+        """Selected by --url, --hostname, --domain or --url-file."""
+        if self.filter.select_all or key in self.exact or (self.prefixes and self.prefixes.is_in(key)):
+            return True
+        if self.host_prefixes and self.host_prefixes.is_in(key):
+            return url_hostname(parse_cdxj_line(line).get('url', '')) in self.hostnames
+        return False
 
     def matches(self, line: str) -> bool:
         key, _, rest = line.partition(' ')
         f = self.filter
-        if not f.select_all and key not in self.exact and not (self.prefixes and self.prefixes.is_in(key)):
+        if not self.selected(key, line):
             return False
         if f.from_ts or f.to:
             timestamp = rest[:rest.find(' ')]

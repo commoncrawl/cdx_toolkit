@@ -7,7 +7,7 @@ from typing import List, Optional
 
 from cdx_toolkit.commoncrawl import normalize_crawl, get_cc_endpoints, match_cc_crawls
 
-from .patterns import domain_to_surts
+from .patterns import domain_to_surts, normalize_host
 
 
 logger = logging.getLogger(__name__)
@@ -86,8 +86,8 @@ def build_where_sql(
     added -- the main lever for reducing scan cost. `conditions` are further (already
     escaped) predicates that are AND-ed. Engines differ only in their FROM clause (see
     build_sql)."""
-    url_host_names = url_host_names or []
-    domains = url_host_registered_domains or []
+    url_host_names = [normalize_host(h) for h in url_host_names or []]
+    domains = [normalize_host(d) for d in url_host_registered_domains or []]
     surt_prefixes = url_surtkey_prefixes or []
     surts = url_surtkeys or []
     if not url_host_names and not domains and not surt_prefixes and not surts:

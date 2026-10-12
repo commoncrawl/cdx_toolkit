@@ -37,14 +37,29 @@ def url_pattern_to_surts(pattern: str) -> Tuple[List[str], List[str]]:
     return [], [to_surt(pattern)]
 
 
+def normalize_host(host: str) -> str:
+    """A hostname or domain as in the index (url_host_name of the columnar index): lower case, no trailing dot."""
+    return host.strip().lower().rstrip('.')
+
+
+def url_hostname(url: str) -> str:
+    """The (normalized) hostname of a URL, '' if it has none."""
+    from urllib.parse import urlsplit
+
+    if '://' not in url:
+        url = 'http://' + url
+    return normalize_host(urlsplit(url).hostname or '')
+
+
 def hostname_to_surts(hostname: str) -> List[str]:
-    """All URLs of exactly this host."""
-    return [to_surt(hostname.strip() + '/')]
+    """The URLs of this host, and of the host with or without www. (the SURT key drops www.); the exact host is
+    checked with url_hostname()."""
+    return [to_surt(normalize_host(hostname) + '/')]
 
 
 def domain_to_surts(domain: str) -> List[str]:
     """All URLs of the domain and its subdomains."""
-    return url_pattern_to_surts('*.' + domain.strip())[0]
+    return url_pattern_to_surts('*.' + normalize_host(domain))[0]
 
 
 def domain_entry_to_surts(entry: str) -> List[str]:
