@@ -1,3 +1,4 @@
+import asyncio
 import time
 from dataclasses import dataclass, field
 
@@ -130,7 +131,9 @@ class RangeJob:
             # read from HTTP
             headers = {'Range': 'bytes={}-{}'.format(offset, end)}
 
-            resp = myrequests_get(self.url, headers=headers)
+            # in a thread, so that the event loop (other readers, the writer) is not blocked; myrequests_get keeps
+            # the minimum interval between requests to a host across threads
+            resp = await asyncio.to_thread(myrequests_get, self.url, headers=headers)
             check_range_response(
                 resp.status_code, resp.headers.get('Content-Range'), len(resp.content), offset, length, self.url
             )

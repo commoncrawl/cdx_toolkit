@@ -2,6 +2,7 @@
 import asyncio
 import contextlib
 import glob
+import gzip
 import itertools
 import os
 import threading
@@ -73,6 +74,30 @@ def test_invalid_range_responses_are_not_written(tmp_path, response):
     with patch('cdx_toolkit.repackage.data_classes.myrequests_get', return_value=response):
         assert wf.filter() == RepackageResult(requested=1, written=0, failed=1)
     assert glob.glob(str(tmp_path / 'out-*')) == []
+
+
+def test_a_slow_http_read_does_not_block_the_other_readers_and_the_writer(tmp_path):
+    """The first read is held until the second capture has been written."""
+    second_written = threading.Event()
+    original_write = LocalFileWriter.write
+
+    def get(url, headers=None, **kwargs):
+        if url.endswith(CAPTURES[0]['filename']):
+            assert second_written.wait(timeout=5), 'the second capture was not written while the first was read'
+        return fake_get(url, headers)
+
+    async def write(self, data):
+        await original_write(self, data)
+        if b'https://example.com/1' in gzip.decompress(data):
+            second_written.set()
+
+    wf = WARCFilter(source=RecordsSource(CAPTURES[:2], 'https://data.example.org', sort=False),
+                    prefix_path=str(tmp_path / 'out'), writer_info={}, n_parallel_readers=2)
+    with patch('cdx_toolkit.repackage.data_classes.myrequests_get', side_effect=get), \
+            patch.object(LocalFileWriter, 'write', write):
+        assert wf.filter() == RepackageResult(requested=2, written=2)
+    records = response_records(glob.glob(str(tmp_path / 'out-*.warc.gz')))
+    assert [r.rec_headers.get_header('WARC-Target-URI') for r in records] == [CAPTURES[1]['url'], CAPTURES[0]['url']]
 
 
 def test_writer_error_stops_the_pipeline_and_removes_the_file(tmp_path):

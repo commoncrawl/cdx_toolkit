@@ -1,6 +1,7 @@
 from typing import Optional
 import requests
 import logging
+import threading
 import time
 from urllib.parse import urlparse
 
@@ -63,6 +64,28 @@ def update_next_fetch(hostname, next_fetch):
     retry_info[hostname]['next_fetch'] = next_fetch
 
 
+# requests may be made from several threads (e.g. the parallel WARC readers of cdxt repackage)
+_retry_lock = threading.Lock()
+
+
+def reserve_fetch_time(hostname: str, now: float) -> float:
+    """The time at which the next request to `hostname` may start, at least the host's minimum interval
+    after the previous one; the time is reserved, so concurrent requests are spaced out too."""
+    with _retry_lock:
+        next_fetch, minimum_interval = get_retries(hostname)
+        fetch_time = max(now, next_fetch)
+        update_next_fetch(hostname, fetch_time + minimum_interval)
+    return fetch_time
+
+
+def finish_fetch(hostname: str) -> None:
+    """After a request: the next one may start the minimum interval from now (or later, if reserved)."""
+    with _retry_lock:
+        get_retries(hostname)
+        entry = retry_info[hostname]
+        entry['next_fetch'] = max(entry['next_fetch'], time.time() + entry['minimum_interval'])
+
+
 def myrequests_get(
     url,
     params=None,
@@ -82,15 +105,14 @@ def myrequests_get(
         raise_warning_after_n_errors = WARNING_AFTER_N_ERRORS
 
     hostname = urlparse(url).hostname
-    next_fetch, minimum_interval = get_retries(hostname)
+    fetch_time = reserve_fetch_time(hostname, t)  # next_fetch is also updated at the bottom
+    minimum_interval = retry_info[hostname]['minimum_interval']
 
-    if t < next_fetch:
-        dt = next_fetch - t
+    if t < fetch_time:
+        dt = fetch_time - t
         if dt > 3.1:
             LOGGER.debug('sleeping for {:.3f}s before next fetch'.format(dt))
         time.sleep(dt)
-    # next_fetch is also updated at the bottom
-    update_next_fetch(hostname, next_fetch + minimum_interval)
 
     if params:
         if 'from_ts' in params:
@@ -176,6 +198,6 @@ def myrequests_get(
         previously_seen_hostnames.add(hostname)
 
     # in case we had a lot of retries, etc
-    update_next_fetch(hostname, time.time() + minimum_interval)
+    finish_fetch(hostname)
 
     return resp
