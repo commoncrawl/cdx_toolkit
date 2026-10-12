@@ -26,6 +26,7 @@ import hashlib
 import logging
 import multiprocessing
 import os
+import posixpath
 import shutil
 import tempfile
 import time
@@ -146,7 +147,8 @@ def run_multiprocess_repackage(
         staging_dir = os.path.join(tmp_dir, 'out')
         if remote_non_s3:
             os.makedirs(staging_dir)
-        write_prefix = os.path.join(staging_dir, 'warc') if remote_non_s3 else prefix_path
+        # staged under the final file names, so that the warcinfo records name the files they are in
+        write_prefix = os.path.join(staging_dir, posixpath.basename(prefix_path)) if remote_non_s3 else prefix_path
 
         configs = [
             dict(

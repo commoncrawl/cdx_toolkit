@@ -300,6 +300,10 @@ def test_multiprocess_repackage(tmp_path, remote):
         # one file per record (--size 1), numbered by the shared counter
         assert sorted(os.path.basename(p) for p in paths) == [f'RUN-SUB-00{i}.warc.gz' for i in range(1, 5)]
         assert len(response_records(paths)) == 4
+        for path in paths:  # the warcinfo record names the file it is in
+            with fsspec.open(path, 'rb') as f:
+                warcinfo = next(iter(ArchiveIterator(f)))
+            assert warcinfo.rec_headers.get_header('WARC-Filename') == os.path.basename(path)
     finally:
         if remote:
             fs.rm('/mp-test', recursive=True)
