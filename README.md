@@ -187,9 +187,7 @@ written to `<prefix>[-<subprefix>]-001.warc.gz`, `-002`, ..., where the
 prefix can be a local path, `s3://...` or `hf://buckets/...` (default:
 `REPACKAGE` in the current directory, e.g. `--prefix out/CC-HOMEPAGES` writes
 `out/CC-HOMEPAGES-001.warc.gz`). No file is written when there are no
-captures. If files of this series exist already (e.g. from an earlier run),
-`cdxt repackage` stops before fetching (exit status 2): use another
-`--prefix` or `--subprefix`. The captures are
+captures. The captures are
 sorted by WARC file and offset first (for faster reads); `--no-sort` keeps
 the input order and streams large inputs without keeping them in memory.
 
@@ -209,6 +207,11 @@ Captures without a WARC location, like Internet Archive captures, are
 replayed from the wayback machine given with `--wb` (`ia` is a shortcut for
 `https://web.archive.org/web`) and written one by one to
 `<prefix>[-<subprefix>]-000000.extracted.warc.gz`, ...
+
+In both cases, if WARC files with the same prefix and subprefix exist already
+(e.g. from an earlier run), `cdxt repackage` stops before fetching (exit
+status 2) instead of overwriting them or adding to them: use another
+`--prefix` or `--subprefix`.
 
 Use `--size` (e.g. `100MB` or `1GiB`) to set the target size of each WARC
 file, `--creator`, `--operator`, `--is-part-of` and `--description` to fill

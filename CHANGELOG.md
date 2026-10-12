@@ -24,7 +24,8 @@
 	+ Parquet output for `cdxt index` and Parquet input for `cdxt repackage` (`cdx_toolkit[parquet]`)
 	+ `cdxt repackage`: default `--prefix REPACKAGE` (was `TEST`), no WARC file is written without captures,
 	  a full URL in `warc_filename`/`filename` is used as it is (the `warc_url` column is gone); stops (exit status 2)
-	  if files of the output series exist already, instead of overwriting them
+	  if WARC files with the same prefix exist already, instead of overwriting them (also with `--wb`, which
+	  numbered its files after the existing ones before)
 	+ fixed `--to` with a day (e.g. `--to 20240410`), which was padded to the end of the month, and February in leap years
 	+ removed the deprecated `cdx_iter` and `cdx_size` scripts
 	+ S3 requests use Common Crawl's recommended AWS settings (us-east-1, adaptive retries, 100000 attempts, virtual

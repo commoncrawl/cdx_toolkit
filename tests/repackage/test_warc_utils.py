@@ -18,13 +18,13 @@ def test_get_metadata_record_from_path():
 
 
 @pytest.mark.parametrize('subprefix, expected', [
-    (None, ['out-001.warc.gz', 'out-1000.warc.gz']),
+    (None, ['out-000000.extracted.warc.gz', 'out-001.warc.gz', 'out-1000.warc.gz']),
     ('SUB', ['out-SUB-002.warc.gz']),
     ('OTHER', []),
 ])
 def test_existing_warc_files(tmp_path, subprefix, expected):
-    for name in ['out-001.warc.gz', 'out-1000.warc.gz', 'out-SUB-002.warc.gz', 'out-x.warc.gz', 'out-001.warc',
-                 'outer-001.warc.gz', 'other-001.warc.gz']:
+    for name in ['out-001.warc.gz', 'out-1000.warc.gz', 'out-000000.extracted.warc.gz', 'out-x.extracted.warc.gz',
+                 'out-SUB-002.warc.gz', 'out-x.warc.gz', 'out-001.warc', 'outer-001.warc.gz', 'other-001.warc.gz']:
         (tmp_path / name).write_bytes(b'')
     found = existing_warc_files(str(tmp_path / 'out'), subprefix)
     assert [f.rsplit('/', 1)[-1] for f in found] == expected

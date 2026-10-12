@@ -79,6 +79,30 @@ def test_repackage_fetches_by_warc_location(tmp_path):
     assert [r.rec_type for r in records] == ['warcinfo', 'response']
 
 
+@pytest.mark.parametrize('existing, wb', [
+    ('out-000000.extracted.warc.gz', True),
+    ('out-001.warc.gz', True),
+    ('out-000000.extracted.warc.gz', False),
+])
+def test_repackage_rejects_existing_warc_files_with_and_without_wb(tmp_path, capsys, existing, wb):
+    """The same rule for both writers: no overwriting, no adding to the files of an earlier run."""
+    (tmp_path / existing).write_bytes(b'earlier run')
+    captures = _write_captures(tmp_path / 'captures.jsonl', [IA_CAPTURE if wb else CC_CAPTURE])
+    wb_args = ['--wb', 'ia'] if wb else []
+
+    with patch.object(cdx_toolkit.cli.repackage, 'fetch_wb_warc') as fetch, \
+            patch('cdx_toolkit.repackage.data_classes.myrequests_get') as get, \
+            pytest.raises(SystemExit) as exc:
+        main(['repackage', captures, '--prefix', str(tmp_path / 'out')] + wb_args)
+
+    assert exc.value.code == 2
+    assert 'exist already' in capsys.readouterr().err
+    fetch.assert_not_called()
+    get.assert_not_called()
+    assert sorted(p.name for p in tmp_path.glob('out-*')) == [existing]
+    assert (tmp_path / existing).read_bytes() == b'earlier run'
+
+
 def test_repackage_without_warc_location_or_wb(tmp_path, capsys):
     captures = _write_captures(tmp_path / 'captures.jsonl', [CC_CAPTURE, IA_CAPTURE])
 

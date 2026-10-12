@@ -87,12 +87,13 @@ def generate_warc_filename(
 
 
 def existing_warc_files(prefix_path: str, writer_subprefix: Optional[str] = None, gzip: bool = True) -> List[str]:
-    """The files of the series <prefix>[-<subprefix>]-NNN.warc[.gz] that already exist (local, s3://, hf://, ...)."""
+    """The files of the series <prefix>[-<subprefix>]-NNN.warc[.gz] (async WARC fetcher) or
+    <prefix>[-<subprefix>]-NNNNNN.extracted.warc[.gz] (--wb) that already exist (local, s3://, hf://, ...)."""
     fs, fs_prefix = fsspec.url_to_fs(prefix_path)
     name = re.escape(posixpath.basename(fs_prefix)) + '-'
     if writer_subprefix is not None:
         name += re.escape(writer_subprefix) + '-'
-    name += r'\d{3,}\.warc' + (r'\.gz' if gzip else '')
+    name += r'\d{3,}(\.extracted)?\.warc' + (r'\.gz' if gzip else '')
     return sorted(
         fs.unstrip_protocol(path) for path in fs.glob(glob.escape(fs_prefix) + '-*')
         if re.fullmatch(name, posixpath.basename(path))
