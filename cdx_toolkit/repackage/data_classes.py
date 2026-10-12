@@ -1,6 +1,6 @@
 import asyncio
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from cdx_toolkit.repackage.s3_utils import is_s3_url, parse_s3_uri, with_retries
 from cdx_toolkit.repackage.hf_utils import is_hf_url
@@ -64,14 +64,9 @@ class RangeJob:
     offset: int
     length: int
     records_count: int = 1
-    # Relative WARC filename (e.g. crawl-data/...warc.gz) as known by the source,
-    # used when materializing a non-self-contained range-jobs CSV. `url` stays
-    # authoritative for fetching.
+    # WARC filename of the record as given in the index (e.g. crawl-data/...warc.gz, relative to the download
+    # prefix), used to sort and shard the jobs by WARC file; `url` is authoritative for fetching.
     filename: Optional[str] = None
-    # Extra columns from a raw SQL --query (e.g. content_languages), kept only for
-    # CSV materialization / analysis. Never used for fetching. Excluded from
-    # equality/hash so RangeJob stays hashable despite the dict value.
-    extra: Optional[dict] = field(default=None, compare=False)
 
     def is_s3(self):
         return is_s3_url(self.url)

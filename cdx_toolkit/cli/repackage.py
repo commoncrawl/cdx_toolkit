@@ -171,7 +171,7 @@ def repackage_by_warc_location(args: Namespace, records, info: dict):
     import fsspec
 
     from cdx_toolkit.repackage.hf_utils import is_hf_url
-    from cdx_toolkit.repackage.sources.records import MissingWarcLocation, RecordsSource
+    from cdx_toolkit.repackage.records_source import MissingWarcLocation, RecordsSource
 
     try:
         source = RecordsSource(records, args.warc_download_prefix, sort=not args.no_sort)

@@ -1,16 +1,11 @@
-import itertools
+'''
+Running queries with AWS Athena (boto3).
+'''
 import logging
 import time
-from typing import Iterator, Iterable, Optional
+from typing import Iterable, Iterator, Optional
 
 from cdx_toolkit.aws import botocore_config
-from cdx_toolkit.repackage.data_classes import RangeJob
-from cdx_toolkit.repackage.sources.base import RangeJobSource
-from cdx_toolkit.repackage.sources.sql_base import (
-    validate_result_columns,
-    join_warc_url,
-    REQUIRED_RESULT_COLUMNS,
-)
 
 
 logger = logging.getLogger(__name__)
@@ -19,51 +14,22 @@ logger = logging.getLogger(__name__)
 ATHENA_USD_PER_TB = 5.0
 
 
-class AthenaSource(RangeJobSource):
-    """RangeJobs from a query against the CC columnar index via AWS Athena."""
+def make_client(region_name: Optional[str] = None):
+    import boto3
 
-    def __init__(
-        self,
-        *,
-        query: str,
-        database: str,
-        s3_output_location: str,
-        warc_download_prefix: Optional[str],
-        region_name: Optional[str] = None,
-        max_wait_time: int = 300,
-    ):
-        self.query = query
-        self.database = database
-        self.s3_output_location = s3_output_location
-        self.warc_download_prefix = warc_download_prefix
-        self.region_name = region_name
-        self.max_wait_time = max_wait_time
+    # retries: Common Crawl's recommended AWS settings, unless configured by the user (see cdx_toolkit.aws)
+    return boto3.client('athena', config=botocore_config(region_name=region_name, read_timeout=60))
 
-    def _make_client(self):
-        import boto3
 
-        # retries: Common Crawl's recommended AWS settings, unless configured by the user (see cdx_toolkit.aws)
-        config = botocore_config(region_name=self.region_name, read_timeout=60)
-        return boto3.client('athena', config=config)
-
-    def iter_rows(self) -> Iterator[dict]:
-        """Run the query and yield the result rows as dicts (column name -> string value)."""
-        client = self._make_client()
-        query_execution_id = run_athena_query(
-            client, self.query, self.database, self.s3_output_location, self.max_wait_time
-        )
-        try:
-            yield from iter_result_rows(client, query_execution_id)
-        finally:
-            report_query_cost(client, query_execution_id)
-
-    def iter_range_jobs(self) -> Iterator[RangeJob]:
-        rows = self.iter_rows()
-        first = next(rows, None)
-        if first is not None:
-            validate_result_columns(list(first))
-            for row in itertools.chain([first], rows):
-                yield row_to_range_job(row, self.warc_download_prefix)
+def iter_athena_rows(query: str, database: str, s3_output_location: str, region_name: Optional[str] = None,
+                     max_wait_time: int = 300) -> Iterator[dict]:
+    """Run the query and yield the result rows as dicts (column name -> string value)."""
+    client = make_client(region_name)
+    query_execution_id = run_athena_query(client, query, database, s3_output_location, max_wait_time)
+    try:
+        yield from iter_result_rows(client, query_execution_id)
+    finally:
+        report_query_cost(client, query_execution_id)
 
 
 def run_athena_query(client, query: str, database: str, s3_output_location: str, max_wait_time: int = 300) -> str:
@@ -163,26 +129,3 @@ def iter_result_rows(client, query_execution_id: str) -> Iterable[dict]:
         for row in rows:
             row_data = [cell.get('VarCharValue', None) for cell in row['Data']]
             yield dict(zip(column_names, row_data))
-
-
-def row_to_range_job(row: dict, warc_download_prefix: Optional[str]) -> RangeJob:
-    warc_filename = row['warc_filename']
-    extra = {k: v for k, v in row.items() if k not in REQUIRED_RESULT_COLUMNS}
-    return RangeJob(
-        url=join_warc_url(warc_download_prefix, warc_filename),
-        offset=int(row['warc_record_offset']),
-        length=int(row['warc_record_length']),
-        filename=warc_filename,
-        extra=extra or None,
-    )
-
-
-def iter_range_jobs(client, query_execution_id: str, warc_download_prefix: Optional[str]) -> Iterable[RangeJob]:
-    """Retrieve query results and convert each row to a RangeJob"""
-    rows = iter_result_rows(client, query_execution_id)
-    first = next(rows, None)
-    if first is None:
-        return
-    validate_result_columns(list(first))
-    for row in itertools.chain([first], rows):
-        yield row_to_range_job(row, warc_download_prefix)

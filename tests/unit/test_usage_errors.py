@@ -15,7 +15,7 @@ from cdx_toolkit.indexes.patterns import domain_entry_to_surts, url_pattern_to_s
 from cdx_toolkit.indexes.sql import DuckDbBackend, sql_timestamp
 from cdx_toolkit.record_io import RecordWriter, import_pyarrow, read_records, write_records
 from cdx_toolkit.repackage.data_classes import RangeJob
-from cdx_toolkit.repackage.sources.sql_base import quote_sql_string
+from cdx_toolkit.indexes.sql_query import quote_sql_string
 
 from tests.conftest import TEST_DATA_PATH
 

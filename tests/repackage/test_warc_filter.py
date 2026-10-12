@@ -2,7 +2,7 @@ from cdx_toolkit.repackage.data_classes import ThroughputTracker
 from tests.conftest import TEST_DATA_PATH
 
 from cdx_toolkit.repackage.warc_filter import WARCFilter
-from cdx_toolkit.repackage.sources.records import RecordsSource
+from cdx_toolkit.repackage.records_source import RecordsSource
 
 fixture_path = TEST_DATA_PATH / 'repackage'
 

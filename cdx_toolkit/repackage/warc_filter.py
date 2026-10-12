@@ -15,7 +15,6 @@ from cdx_toolkit.repackage.s3_utils import (
 from cdx_toolkit.repackage.hf_utils import make_hf_reader
 from cdx_toolkit.repackage.data_classes import RangeJob, RangePayload, RepackageResult, ThroughputTracker
 from cdx_toolkit.repackage.warc_utils import create_new_writer_with_header
-from cdx_toolkit.repackage.sources.base import RangeJobSource
 from cdx_toolkit.repackage.warc_utils import get_bytes_from_warc_record, get_metadata_record_from_path
 
 
@@ -72,7 +71,7 @@ class WARCFilter:
         self,
         prefix_path: str,
         writer_info: Dict,
-        source: RangeJobSource,
+        source,
         writer_subprefix: Optional[str] = None,
         write_paths_as_metadata_records: Optional[List[str]] = None,
         log_every_n: int = 1000,
@@ -92,7 +91,7 @@ class WARCFilter:
         """Initialize the WARC filter.
 
         Args:
-            source: RangeJobSource that yields the WARC ranges to repackage.
+            source: The WARC ranges to repackage: an object with iter_range_jobs() (e.g. a RecordsSource).
             prefix_path: Output path prefix for filtered WARC files.
             writer_info: Dictionary containing writer metadata.
             writer_subprefix: Optional subprefix for writer output paths.

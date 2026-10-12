@@ -19,7 +19,7 @@ Status legend: **[done]** implemented on this branch · **[proposed]** not yet i
 
 Three async stages on a single `asyncio` event loop (`cdx_toolkit/repackage/warc_filter.py`):
 
-1. **Produce** — the selected `RangeJobSource` yields `RangeJob`s (one per WARC record:
+1. **Produce** — the source (`RecordsSource`, the captures of the index file) yields `RangeJob`s (one per WARC record:
    url + byte offset + length). The source is a *sync* generator run in a worker
    thread (`asyncio.to_thread(drain)`, `warc_filter.py:~276`), pushing each job onto a
    bounded `range_jobs_queue` via `run_coroutine_threadsafe(...).result()`.

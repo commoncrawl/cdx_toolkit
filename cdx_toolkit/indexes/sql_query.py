@@ -1,14 +1,16 @@
+'''
+SQL queries for the columnar URL index (Athena, DuckDB): escaping, the WHERE clause of the guided queries, crawls.
+'''
 import logging
 import re
 from typing import List, Optional
 
 from cdx_toolkit.commoncrawl import normalize_crawl, get_cc_endpoints, match_cc_crawls
 
+from .patterns import domain_to_surts
+
 
 logger = logging.getLogger(__name__)
-
-# Required output columns that any index query (built or raw) must provide.
-REQUIRED_RESULT_COLUMNS = ('warc_filename', 'warc_record_offset', 'warc_record_length')
 
 # Hostnames, TLDs and crawl names only ever contain these characters. Validating
 # against this set both prevents SQL injection and catches malformed input early.
@@ -57,8 +59,6 @@ def domain_predicate(domain: str) -> str:
 
     The SURT prefixes give the exact host boundary; the registered domain, which is one of the suffixes of the
     domain, makes the query cheaper (an equality the engines can push down)."""
-    from cdx_toolkit.indexes.patterns import domain_to_surts
-
     surts = domain_to_surts(domain)
     labels = surts[0][:-1].split(',')[::-1]  # canonical, e.g. without www.
     suffixes = ['.'.join(labels[i:]) for i in range(len(labels) - 1)] or labels
@@ -139,61 +139,20 @@ def build_sql(
     `from_clause` is the text following FROM (e.g. `ccindex` for Athena, or a
     `read_parquet(...)` expression for DuckDB). When `order_by` is set, results are
     sorted by (warc_filename, warc_record_offset) for fetch-time read locality.
-    `columns` defaults to the REQUIRED_RESULT_COLUMNS."""
+    `columns` defaults to the WARC location columns."""
     where_sql = build_where_sql(
         url_host_names, crawls, url_host_registered_domains=url_host_registered_domains, conditions=conditions,
         url_surtkey_prefixes=url_surtkey_prefixes, url_surtkeys=url_surtkeys,
     )
     order_sql = f'\n    {ORDER_BY_SQL}' if order_by else ''
     limit_sql = f'\n    LIMIT {limit}' if limit and limit > 0 else ''
-    columns_sql = ', '.join(columns or REQUIRED_RESULT_COLUMNS)
+    columns_sql = ', '.join(columns or ('warc_filename', 'warc_record_offset', 'warc_record_length'))
 
     return f"""
     SELECT
         {columns_sql}
     FROM {from_clause}
     WHERE {where_sql}{order_sql}{limit_sql}"""
-
-
-def build_athena_query(
-    url_host_names: Optional[List[str]] = None,
-    crawls: Optional[List[str]] = None,
-    limit: int = 0,
-    table: str = 'ccindex',
-    url_host_registered_domains: Optional[List[str]] = None,
-    order_by: bool = True,
-) -> str:
-    """Athena flavour of build_sql (FROM <table>)."""
-    return build_sql(
-        table, url_host_names, crawls=crawls, limit=limit,
-        url_host_registered_domains=url_host_registered_domains,
-        order_by=order_by,
-    )
-
-
-def validate_result_columns(column_names) -> None:
-    """Raise a clear error if the query result lacks the required columns."""
-    missing = [c for c in REQUIRED_RESULT_COLUMNS if c not in (column_names or [])]
-    if missing:
-        raise ValueError(
-            'Index query result is missing required columns: ' + ', '.join(missing) +
-            '. The query (including a raw --query) must SELECT ' +
-            ', '.join(REQUIRED_RESULT_COLUMNS) + '.'
-        )
-
-
-def join_warc_url(prefix: Optional[str], warc_filename: str) -> str:
-    """Join a download prefix with a warc_filename robustly.
-
-    - if warc_filename is already absolute (contains '://'), return it unchanged
-      (supports custom queries / self-contained CSVs whose value is a full URL);
-    - if prefix is empty/None, return warc_filename unchanged;
-    - otherwise join with exactly one '/' (no double slash, no missing slash)."""
-    if '://' in warc_filename:
-        return warc_filename
-    if not prefix:
-        return warc_filename
-    return prefix.rstrip('/') + '/' + warc_filename.lstrip('/')
 
 
 def endpoint_to_crawl_name(endpoint: str) -> str:

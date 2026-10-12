@@ -15,7 +15,7 @@ from warcio.archiveiterator import ArchiveIterator
 from cdx_toolkit.repackage import multiprocess
 from cdx_toolkit.repackage.data_classes import RangeJob, RepackageResult
 from cdx_toolkit.repackage.local_writer import LocalFileWriter
-from cdx_toolkit.repackage.sources.records import RecordsSource
+from cdx_toolkit.repackage.records_source import RecordsSource
 from cdx_toolkit.repackage.warc_filter import WARCFilter
 from tests.fake_warc_server import FakeWarcServer
 

@@ -129,7 +129,7 @@ def test_s3fs_uses_the_defaults(no_user_config, monkeypatch):
 
 def test_warc_fetcher_s3_clients(no_user_config):
     pytest.importorskip('aioboto3')
-    from cdx_toolkit.repackage.sources.records import RecordsSource
+    from cdx_toolkit.repackage.records_source import RecordsSource
     from cdx_toolkit.repackage.warc_filter import WARCFilter
 
     wf = WARCFilter(source=RecordsSource([], None), prefix_path='out', writer_info={}, n_parallel_readers=4)

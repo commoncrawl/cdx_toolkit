@@ -1,4 +1,4 @@
-"""AthenaSource and the Athena index backend with a fake boto3 Athena client (no AWS)."""
+"""Running Athena queries and the Athena index backend with a fake boto3 Athena client (no AWS)."""
 import json
 import logging
 from unittest.mock import patch
@@ -8,7 +8,7 @@ import pytest
 from cdx_toolkit.cli import main
 from cdx_toolkit.indexes import IndexQuery
 from cdx_toolkit.indexes.sql import AthenaBackend
-from cdx_toolkit.repackage.sources.athena import AthenaSource, report_query_cost, run_athena_query
+from cdx_toolkit.indexes.athena import iter_athena_rows, make_client, report_query_cost, run_athena_query
 
 ATHENA = 'athena://athena.eu-west-1.amazonaws.com/mydb?S3OutputLocation=s3://bucket/athena/'
 COLUMNS = ['url', 'fetch_time', 'fetch_status', 'warc_filename', 'warc_record_offset', 'warc_record_length']
@@ -57,29 +57,18 @@ class FakeAthenaClient:
 @pytest.fixture
 def client():
     fake = FakeAthenaClient()
-    with patch.object(AthenaSource, '_make_client', return_value=fake), \
-            patch('cdx_toolkit.repackage.sources.athena.time.sleep'):
+    with patch('cdx_toolkit.indexes.athena.make_client', return_value=fake), \
+            patch('cdx_toolkit.indexes.athena.time.sleep'):
         yield fake
 
 
-def test_source_rows_jobs_and_cost(client, caplog):
-    source = AthenaSource(query='SELECT 1', database='ccindex', s3_output_location='s3://b/p/',
-                          warc_download_prefix='s3://commoncrawl')
-
+def test_rows_and_cost(client, caplog):
     with caplog.at_level(logging.INFO):
-        rows = list(source.iter_rows())
+        rows = list(iter_athena_rows('SELECT 1', 'ccindex', 's3://b/p/'))
     assert rows == [dict(zip(COLUMNS, row)) for row in ROWS]
     assert client.started[0]['QueryExecutionContext'] == {'Database': 'ccindex'}
     assert client.started[0]['ResultConfiguration'] == {'OutputLocation': 's3://b/p/'}
     assert 'Athena scanned 2.00 GB, estimated cost ~$0.0100' in caplog.text
-
-    jobs = list(source.iter_range_jobs())
-    assert [(j.url, j.offset, j.length) for j in jobs] == [
-        ('s3://commoncrawl/crawl-data/a.warc.gz', 10, 100), ('s3://commoncrawl/crawl-data/b.warc.gz', 20, 200),
-    ]
-    assert jobs[0].extra == {
-        'url': 'https://example.com/', 'fetch_time': '2024-07-13 10:22:33.000', 'fetch_status': '200',
-    }
 
 
 def test_index_athena_end_to_end(client, capsys):
@@ -100,8 +89,8 @@ def test_athena_count():
     fake.get_paginator = lambda name: type('P', (), {'paginate': lambda self, **kw: iter([
         {'ResultSet': {'Rows': [{'Data': [{'VarCharValue': 'n'}]}, {'Data': [{'VarCharValue': '42'}]}]}}
     ])})()
-    with patch.object(AthenaSource, '_make_client', return_value=fake), \
-            patch('cdx_toolkit.repackage.sources.athena.time.sleep'):
+    with patch('cdx_toolkit.indexes.athena.make_client', return_value=fake), \
+            patch('cdx_toolkit.indexes.athena.time.sleep'):
         assert AthenaBackend(ATHENA, assume_yes=True).count(IndexQuery(domains=['example.com'])) == 42
     assert fake.started[0]['QueryString'].startswith('SELECT count(*) AS n FROM (')
 
@@ -116,7 +105,7 @@ def test_failed_query(caplog):
 
 def test_query_timeout_is_cancelled():
     fake = FakeAthenaClient(states=['RUNNING'])
-    with patch('cdx_toolkit.repackage.sources.athena.time.sleep'), pytest.raises(TimeoutError):
+    with patch('cdx_toolkit.indexes.athena.time.sleep'), pytest.raises(TimeoutError):
         run_athena_query(fake, 'SELECT 1', 'ccindex', 's3://b/p/', max_wait_time=0)
     assert fake.stopped == ['qid']
 
@@ -132,11 +121,60 @@ def test_make_client_uses_the_region(monkeypatch):
     monkeypatch.delenv('AWS_MAX_ATTEMPTS', raising=False)
     monkeypatch.delenv('AWS_RETRY_MODE', raising=False)
     monkeypatch.setattr('cdx_toolkit.aws.user_aws_config', lambda: {})
-    source = AthenaSource(query='SELECT 1', database='d', s3_output_location='s3://b/', warc_download_prefix=None,
-                          region_name='eu-west-1')
     with patch('boto3.client') as boto3_client:
-        source._make_client()
+        make_client('eu-west-1')
     args, kwargs = boto3_client.call_args
     assert args == ('athena',) and kwargs['config'].region_name == 'eu-west-1'
     # Common Crawl's recommended retry settings (cdx_toolkit.aws)
     assert kwargs['config'].retries == {'mode': 'adaptive', 'total_max_attempts': 100000}
+
+
+class _FakeAthenaClient:
+    """Minimal stand-in for a boto3 Athena client (no AWS, no network)."""
+
+    def __init__(self, raise_on_wait=None):
+        self._raise_on_wait = raise_on_wait
+        self.started = []
+        self.stopped = []
+
+    def start_query_execution(self, **kwargs):
+        self.started.append(kwargs)
+        return {'QueryExecutionId': 'qid-123'}
+
+    def get_query_execution(self, QueryExecutionId):
+        if self._raise_on_wait is not None:
+            raise self._raise_on_wait
+        return {'QueryExecution': {'Status': {'State': 'SUCCEEDED'},
+                                   'Statistics': {'DataScannedInBytes': 1000}}}
+
+    def stop_query_execution(self, QueryExecutionId):
+        self.stopped.append(QueryExecutionId)
+
+
+def test_run_athena_query_logs_sql(caplog):
+    import logging
+    client = _FakeAthenaClient()
+    with caplog.at_level(logging.INFO):
+        run_athena_query(client, 'SELECT my_special_column FROM ccindex', 'ccindex', 's3://b/out/')
+    assert 'SELECT my_special_column FROM ccindex' in caplog.text
+
+
+def test_run_athena_query_success_no_cancel():
+    client = _FakeAthenaClient()
+    qid = run_athena_query(client, 'SELECT 1', 'ccindex', 's3://b/out/')
+    assert qid == 'qid-123'
+    assert client.stopped == []
+
+
+def test_run_athena_query_cancels_on_interrupt():
+    client = _FakeAthenaClient(raise_on_wait=KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        run_athena_query(client, 'SELECT 1', 'ccindex', 's3://b/out/')
+    assert client.stopped == ['qid-123']
+
+
+def test_run_athena_query_cancels_on_timeout():
+    client = _FakeAthenaClient(raise_on_wait=TimeoutError('too slow'))
+    with pytest.raises(TimeoutError):
+        run_athena_query(client, 'SELECT 1', 'ccindex', 's3://b/out/')
+    assert client.stopped == ['qid-123']

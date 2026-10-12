@@ -8,13 +8,12 @@ import sys
 from typing import Iterator, List, Mapping, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
-from cdx_toolkit.repackage.sources.base import CostEstimate
 from cdx_toolkit.timeutils import pad_timestamp, pad_timestamp_up
-from cdx_toolkit.repackage.sources.sql_base import build_sql, resolve_crawl_names
 
 from .base import IndexBackend, UsageError
 from .patterns import url_pattern_to_surts
 from .query import IndexQuery, field_flag
+from .sql_query import build_sql, resolve_crawl_names
 
 
 LOGGER = logging.getLogger(__name__)
@@ -45,20 +44,18 @@ LARGE_CRAWL_SET_THRESHOLD = 10
 GUIDED_OPTIONS = ('urls', 'hostnames', 'domains', 'crawl', 'from_ts', 'to', 'languages', 'limit')
 
 
-def confirm_cost(estimate: Optional[CostEstimate], confirmed: bool) -> None:
+def confirm_cost(n_crawls: Optional[int], engine: str, confirmed: bool) -> None:
     """Prompt before running a potentially expensive index scan.
 
-    A scan bounded to <= LARGE_CRAWL_SET_THRESHOLD crawls runs without a prompt.
-    Otherwise (no crawl filter, a large crawl set, or unverifiable raw SQL) we confirm
-    interactively, abort in non-interactive sessions, unless `confirmed` (--yes)."""
-    if confirmed or estimate is None:
+    `n_crawls` is the number of crawls the scan is restricted to, None if it is not restricted (or it cannot be
+    verified, e.g. for raw SQL). A scan bounded to <= LARGE_CRAWL_SET_THRESHOLD crawls runs without a prompt.
+    Otherwise we confirm interactively, abort in non-interactive sessions, unless `confirmed` (--yes)."""
+    if confirmed:
         return
 
-    n_crawls = estimate.n_crawls
     if n_crawls is not None and n_crawls <= LARGE_CRAWL_SET_THRESHOLD:
         return
 
-    engine = estimate.engine
     if n_crawls is None:
         reason = (f'This {engine} query is not restricted to specific crawls (or uses custom SQL '
                   'whose crawl partition pruning could not be verified) and may scan ALL crawls.')
@@ -164,7 +161,6 @@ class SqlBackend(IndexBackend):
     def __init__(self, location: str, assume_yes: bool = False):
         self.location = location
         self.assume_yes = assume_yes
-        self._prepared = None
 
     url_file_hint = ''
 
@@ -215,13 +211,13 @@ class SqlBackend(IndexBackend):
 
     def iter_records(self, query: IndexQuery) -> Iterator[Mapping]:
         sql, n_crawls = self.prepare(query)
-        confirm_cost(CostEstimate(n_crawls=n_crawls, engine=self.engine), self.assume_yes)
+        confirm_cost(n_crawls, self.engine, self.assume_yes)
         for row in self.iter_sql_rows(sql):
             yield normalize_row(row)
 
     def count(self, query: IndexQuery) -> int:
         sql, n_crawls = self.prepare(query, order_by=False)
-        confirm_cost(CostEstimate(n_crawls=n_crawls, engine=self.engine), self.assume_yes)
+        confirm_cost(n_crawls, self.engine, self.assume_yes)
         row = next(self.iter_sql_rows(f'SELECT count(*) AS n FROM ({sql}) AS q'))
         return int(row['n'])
 
@@ -250,18 +246,17 @@ class DuckDbBackend(SqlBackend):
         super().__init__(location, assume_yes)
 
     def from_clause(self, crawls):
-        from cdx_toolkit.repackage.sources.duckdb import _build_from_clause
+        from .duckdb import build_from_clause
 
         if self.location.endswith('.parquet'):  # file(s), possibly a glob
             return f"read_parquet('{self.location}', hive_partitioning=true)", False
         # hive-partitioned index directory: prune the crawls in the glob
-        return _build_from_clause(self.location, crawls), True
+        return build_from_clause(self.location, crawls), True
 
     def iter_sql_rows(self, sql):
-        from cdx_toolkit.repackage.sources.duckdb import DuckDbSource
+        from .duckdb import iter_duckdb_rows
 
-        source = DuckDbSource(query=sql)
-        return source.iter_rows()
+        return iter_duckdb_rows(sql)
 
 
 class AthenaBackend(SqlBackend):
@@ -288,16 +283,9 @@ class AthenaBackend(SqlBackend):
         return self.table, False
 
     def iter_sql_rows(self, sql):
-        from cdx_toolkit.repackage.sources.athena import AthenaSource
+        from .athena import iter_athena_rows
 
-        source = AthenaSource(
-            query=sql,
-            database=self.database,
-            s3_output_location=self.s3_output_location,
-            warc_download_prefix=None,
-            region_name=self.region,
-        )
-        return source.iter_rows()
+        return iter_athena_rows(sql, self.database, self.s3_output_location, region_name=self.region)
 
 
 def parse_athena_location(location: str) -> Tuple[str, str, str, str]:

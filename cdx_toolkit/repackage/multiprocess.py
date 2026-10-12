@@ -5,8 +5,8 @@ A single asyncio loop saturates one CPU core on many small range-GETs, so reachi
 all cores needs multiple processes. This orchestrator keeps that entirely inside
 ``cdxt repackage`` (no external driver):
 
-1. Drain the configured source once and split it into N self-contained shard CSVs,
-   hashed by WARC filename so every record of a file stays in one shard.
+1. Drain the configured source once and split it into N shard files (JSONL records with the full
+   WARC URL), hashed by WARC filename so every record of a file stays in one shard.
 2. Run one worker process per (non-empty) shard concurrently. Each worker **rotates its
    output at ``--size``**; every output file is a self-contained WARC with its own
    ``warcinfo`` record.
@@ -36,8 +36,9 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
 
 from cdx_toolkit.aws import configure_fsspec_s3
+from cdx_toolkit.record_io import RecordWriter, read_records
 from cdx_toolkit.repackage.data_classes import RepackageResult
-from cdx_toolkit.repackage.sources.csv import CsvSource, RangeJobCsvWriter
+from cdx_toolkit.repackage.records_source import RecordsSource
 from cdx_toolkit.repackage.warc_filter import WARCFilter
 from cdx_toolkit.repackage.warc_utils import generate_warc_filename
 from cdx_toolkit.repackage.s3_utils import is_s3_url, parse_s3_uri
@@ -78,7 +79,7 @@ def _run_worker(cfg: Dict) -> RepackageResult:
     """Worker entrypoint (runs in a child process): fetch one shard into the output WARCs."""
     if cfg.get('uvloop'):
         os.environ['CDXT_UVLOOP'] = '1'
-    source = CsvSource(cfg['shard_csv'], warc_download_prefix=None, sort=True)
+    source = RecordsSource(read_records(cfg['shard'], 'jsonl'), warc_download_prefix=None, sort=True)
     wf = WARCFilter(
         source=source,
         prefix_path=cfg['prefix_path'],
@@ -96,23 +97,25 @@ def _run_worker(cfg: Dict) -> RepackageResult:
 
 
 def _split_source_to_shards(source, n: int, out_dir: str) -> Tuple[List[str], List[int]]:
-    """Drain the source once into N self-contained shard CSVs, hashed by WARC file.
+    """Drain the source once into N shard files, hashed by WARC file; the records have the full WARC URL as
+    filename, so they are read without a download prefix.
 
     Returns the shard paths and the number of range jobs in each shard."""
-    paths = [os.path.join(out_dir, f'shard.{i}.csv') for i in range(n)]
-    writers = [RangeJobCsvWriter(p) for p in paths]
+    paths = [os.path.join(out_dir, f'shard.{i}.jsonl') for i in range(n)]
+    files = [open(p, 'w', encoding='utf-8') for p in paths]
+    writers = [RecordWriter(f, 'jsonl') for f in files]
     counts = [0] * n
     total = 0
     try:
         for job in source.iter_range_jobs():
             key = (job.filename or job.url or '').encode()
             idx = int(hashlib.md5(key).hexdigest(), 16) % n
-            writers[idx].write(job)
+            writers[idx].write({'filename': job.url, 'offset': job.offset, 'length': job.length})
             counts[idx] += 1
             total += 1
     finally:
-        for w in writers:
-            w.close()
+        for f in files:
+            f.close()
     logger.info('Sharded %d range jobs into %d shards: %s', total, n, counts)
     return paths, counts
 
@@ -137,9 +140,9 @@ def run_multiprocess_repackage(
     tmp_dir = tempfile.mkdtemp(prefix='cdxt_shards_')
     start = time.time()
     try:
-        shard_csvs, counts = _split_source_to_shards(source, n_processes, tmp_dir)
+        shards, counts = _split_source_to_shards(source, n_processes, tmp_dir)
         # empty shards would only produce WARC files without records
-        shard_csvs = [path for path, count in zip(shard_csvs, counts) if count > 0] or shard_csvs[:1]
+        shards = [path for path, count in zip(shards, counts) if count > 0] or shards[:1]
 
         # The WARC writer supports S3 and local FS only. Other fsspec destinations
         # (e.g. an hf:// bucket) are staged in a local dir and copied afterwards.
@@ -152,7 +155,7 @@ def run_multiprocess_repackage(
 
         configs = [
             dict(
-                shard_csv=shard_csv,
+                shard=shard,
                 prefix_path=write_prefix,
                 subprefix=writer_subprefix,
                 writer_info=writer_info,
@@ -164,7 +167,7 @@ def run_multiprocess_repackage(
                 max_file_size=max_file_size,
                 uvloop=uvloop,
             )
-            for shard_csv in shard_csvs
+            for shard in shards
         ]
 
         logger.info('Launching %d worker processes x %d readers', len(configs), readers_per_process)
