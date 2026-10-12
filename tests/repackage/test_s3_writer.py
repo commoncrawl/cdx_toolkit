@@ -73,7 +73,7 @@ class FakeS3:
 
 
 def make_writer(s3):
-    writer = S3ShardWriter(s3, 'out.warc.gz', 'bucket', None, min_part_size=4, max_attempts=2,
+    writer = S3ShardWriter(s3, 'out.warc.gz', 'bucket', min_part_size=4, max_attempts=2,
                            base_backoff_seconds=0)
     writer.upload_id = 'upload-id'
     return writer

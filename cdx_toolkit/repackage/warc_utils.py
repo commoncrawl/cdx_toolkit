@@ -99,83 +99,35 @@ def existing_warc_files(prefix_path: str, writer_subprefix: Optional[str] = None
     )
 
 
-async def create_new_writer_with_header(
+def new_warc_writer(
     sequence: int,
     output_path_prefix: str,
     max_attempts: int,
     base_backoff_seconds: float,
     min_part_size: int,
-    writer_info: Dict,
-    warc_version: str = '1.0',
     writer_subprefix: Optional[str] = None,
     gzip: bool = False,
-    content_type: Optional[str] = None,
     s3_client=None,
-) -> Tuple[Union[S3ShardWriter, LocalFileWriter], int, str]:
-    """Create a new WARC writer (local or S3) and write the warcinfo record.
+) -> Tuple[Union[S3ShardWriter, LocalFileWriter], str]:
+    """A new (not started) writer of a WARC file, local or S3, and the file's name (for the warcinfo record).
 
-    Returns the writer, the size of the warcinfo record and its WARC-Record-ID."""
+    Both writers have the same life cycle: start(), write()..., then close(), which completes the file, or
+    abort(), which removes it (or aborts its upload); a writer that cannot close aborts itself."""
     if is_s3_url(output_path_prefix):
         dest_bucket, dest_prefix = parse_s3_uri(output_path_prefix)
+        key = generate_warc_filename(dest_prefix, sequence=sequence, writer_subprefix=writer_subprefix, gzip=gzip)
+        writer = S3ShardWriter(s3_client, key, dest_bucket, min_part_size, max_attempts, base_backoff_seconds)
+        return writer, key.split('/')[-1]
 
-        warc_file_path = generate_warc_filename(
-            dest_prefix=dest_prefix,
-            sequence=sequence,
-            writer_subprefix=writer_subprefix,
-            gzip=gzip,
-        )
-
-        new_writer = S3ShardWriter(
-            s3_client,
-            warc_file_path,
-            dest_bucket,
-            content_type,
-            min_part_size,
-            max_attempts,
-            base_backoff_seconds,
-        )
-
-    else:
-        # local file system
-        warc_file_path = generate_warc_filename(
-            dest_prefix=output_path_prefix,
-            sequence=sequence,
-            writer_subprefix=writer_subprefix,
-            gzip=gzip,
-        )
-
-        new_writer = LocalFileWriter(
-            file_path=warc_file_path,
-        )
-
-    logger.debug('Initialzing new WARC writer for %s', warc_file_path)
-
-    try:
-        return await _start_with_header(new_writer, warc_file_path, writer_info, warc_version, gzip)
-    except BaseException:
-        await new_writer.abort()
-        raise
+    path = generate_warc_filename(output_path_prefix, sequence=sequence, writer_subprefix=writer_subprefix, gzip=gzip)
+    return LocalFileWriter(file_path=path), os.path.basename(path)  # with backslashes on Windows
 
 
-async def _start_with_header(new_writer, warc_file_path: str, writer_info: Dict, warc_version: str, gzip: bool):
-    # Initialize writer
-    await new_writer.start()
-
-    # Write WARC header; the `filename` field names this file
-    # an S3 key or a local path (with backslashes on Windows)
-    warc_file_name = warc_file_path.split('/')[-1] if isinstance(new_writer, S3ShardWriter) \
-        else os.path.basename(warc_file_path)
+def warcinfo_record_bytes(warc_file_name: str, writer_info: Dict, warc_version: str, gzip: bool) -> Tuple[bytes, str]:
+    """The warcinfo record of a WARC file (its `filename` field names the file) and its WARC-Record-ID (the
+    WARC-Warcinfo-ID of the file's other records)."""
     buffer = BytesIO()
     warc_writer = WARCWriter(buffer, gzip=gzip, warc_version=warc_version)
-    warcinfo = warc_writer.create_warcinfo_record(
-        filename=warc_file_name,
-        info=writer_info,
-    )
+    warcinfo = warc_writer.create_warcinfo_record(filename=warc_file_name, info=writer_info)
     warc_writer.write_record(warcinfo)
-    header_data = buffer.getvalue()
-    await new_writer.write(header_data)
-
-    # WARC-Warcinfo-ID indicates the WARC-Record-ID of the associated ‘warcinfo’ record
-    warcinfo_id = warcinfo.rec_headers.get('WARC-Record-ID')
-
-    return new_writer, len(header_data), warcinfo_id
+    return buffer.getvalue(), warcinfo.rec_headers.get('WARC-Record-ID')

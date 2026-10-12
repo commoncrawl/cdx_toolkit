@@ -14,8 +14,9 @@ from cdx_toolkit.repackage.s3_utils import (
 )
 from cdx_toolkit.repackage.hf_utils import make_hf_reader
 from cdx_toolkit.repackage.data_classes import RangeJob, RangePayload, RepackageResult, ThroughputTracker
-from cdx_toolkit.repackage.warc_utils import create_new_writer_with_header
-from cdx_toolkit.repackage.warc_utils import get_bytes_from_warc_record, get_metadata_record_from_path
+from cdx_toolkit.repackage.warc_utils import (
+    get_bytes_from_warc_record, get_metadata_record_from_path, new_warc_writer, warcinfo_record_bytes,
+)
 
 
 _STOP = object()
@@ -78,12 +79,10 @@ class WARCFilter:
         n_parallel_readers: int = 1,
         max_attempts: int = 5,
         base_backoff_seconds: float = 0.5,
-        # writer_kwargs: Optional[Dict] = None,
         range_jobs_queue_size: int = 1000,
         warc_records_queue_size: int = 200,
         aws_region_name: Optional[str] = None,
         warc_version: str = '1.0',
-        content_type: Optional[str] = None,
         min_part_size: int = 5 * 1024 * 1024,  # 5 MiB (for upload)
         max_file_size: Optional[int] = 1 * 1024 * 1024 * 1024,  # 1 GiB (for WARC outputs)
         next_file_sequence: Optional[Callable[[int], int]] = None,
@@ -100,12 +99,10 @@ class WARCFilter:
             n_parallel_readers: Number of async readers per process (one writer per process).
             max_attempts: Maximum retry attempts for failed operations.
             base_backoff_seconds: Base backoff time in seconds for retries.
-            writer_kwargs: Optional additional kwargs for writers.
             range_jobs_queue_size: Maximum size of range jobs queue.
             warc_records_queue_size: Maximum size of WARC records queue.
             aws_region_name: AWS region for S3 operations (default: the user's AWS configuration, else us-east-1).
             warc_version: WARC format version (e.g., '1.0' or '1.1').
-            content_type: Optional content type for WARC output.
             min_part_size: Minimum part byte size for multipart uploads (default: 5 MiB).
             max_file_size: Maximum byte size for individual WARC files (default: 1 GiB).
             next_file_sequence: Number of the next output file, given the current one
@@ -120,7 +117,6 @@ class WARCFilter:
         self.write_paths_as_metadata_records = write_paths_as_metadata_records
         self.log_every_n = log_every_n
 
-        # self.writer_kwargs = writer_kwargs
         self.range_jobs_queue_size = range_jobs_queue_size
         self.warc_records_queue_size = warc_records_queue_size
         self.aws_region_name = aws_region_name
@@ -136,7 +132,6 @@ class WARCFilter:
         self.gzip = True
 
         self.warc_version = warc_version
-        self.content_type = content_type
         self.min_part_size = min_part_size
         self.max_file_size = max_file_size
         # Number of the next output file, given the current one (0 before the first file). The
@@ -428,19 +423,6 @@ class WARCFilter:
         current_file_size = 0
         records_in_file = 0
 
-        new_writer_kwargs = dict(
-            s3_client=s3_client,
-            output_path_prefix=self.prefix_path,
-            max_attempts=self.max_attempts,
-            base_backoff_seconds=self.base_backoff_seconds,
-            writer_info=self.writer_info,
-            warc_version=self.warc_version,
-            writer_subprefix=self.writer_subprefix,
-            gzip=self.gzip,
-            content_type=self.content_type,
-            min_part_size=self.min_part_size,
-        )
-
         tracker = ThroughputTracker()
         tracker.start()
         counter = 0
@@ -466,7 +448,7 @@ class WARCFilter:
                 if writer is None:
                     # first file, with header and metadata records
                     current_file_sequence = self.next_file_sequence(0)
-                    writer, current_file_size = await self.start_file(current_file_sequence, **new_writer_kwargs)
+                    writer, current_file_size = await self.start_file(current_file_sequence, s3_client)
                     records_in_file = 0
                 elif records_in_file and self.max_file_size and \
                         current_file_size + len(item.data) > self.max_file_size:
@@ -475,7 +457,7 @@ class WARCFilter:
                     await writer.close()
                     writer = None
                     current_file_sequence = self.next_file_sequence(current_file_sequence)
-                    writer, current_file_size = await self.start_file(current_file_sequence, **new_writer_kwargs)
+                    writer, current_file_size = await self.start_file(current_file_sequence, s3_client)
                     records_in_file = 0
                     logger.info(f'Rotated to new WARC file sequence {current_file_sequence} due to size limit')
 
@@ -524,15 +506,30 @@ class WARCFilter:
                 stats['mb_per_sec'],
             )
 
-    async def start_file(self, sequence: int, **new_writer_kwargs):
-        """Start a new WARC file with its warcinfo record (and the metadata records, if any).
+    async def start_file(self, sequence: int, s3_client=None):
+        """Start a new WARC file with its warcinfo record (and the metadata records, if any); if that fails, the
+        file is aborted.
 
         Returns the writer and the number of bytes written."""
-        writer, file_size, warcinfo_id = await create_new_writer_with_header(sequence=sequence, **new_writer_kwargs)
-        if self.write_paths_as_metadata_records:
-            try:
+        writer, warc_file_name = new_warc_writer(
+            sequence,
+            self.prefix_path,
+            max_attempts=self.max_attempts,
+            base_backoff_seconds=self.base_backoff_seconds,
+            min_part_size=self.min_part_size,
+            writer_subprefix=self.writer_subprefix,
+            gzip=self.gzip,
+            s3_client=s3_client,
+        )
+        logger.debug('Starting WARC file %s', warc_file_name)
+        try:
+            await writer.start()
+            header, warcinfo_id = warcinfo_record_bytes(warc_file_name, self.writer_info, self.warc_version, self.gzip)
+            await writer.write(header)
+            file_size = len(header)
+            if self.write_paths_as_metadata_records:
                 file_size += await self.write_metadata_records(writer, warcinfo_id=warcinfo_id)
-            except BaseException:
-                await writer.abort()
-                raise
+        except BaseException:
+            await writer.abort()
+            raise
         return writer, file_size

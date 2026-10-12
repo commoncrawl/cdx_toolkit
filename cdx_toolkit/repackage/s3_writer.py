@@ -92,7 +92,6 @@ class S3ShardWriter:
         s3_client,
         shard_key: str,
         dest_bucket: str,
-        content_type: Optional[str],
         min_part_size: int,
         max_attempts: int,
         base_backoff_seconds: float,
@@ -100,7 +99,6 @@ class S3ShardWriter:
         self.s3_client = s3_client
         self.shard_key = shard_key
         self.dest_bucket = dest_bucket
-        self.content_type = content_type
         self.min_part_size = min_part_size
         self.max_attempts = max_attempts
         self.base_backoff_seconds = base_backoff_seconds
