@@ -55,6 +55,17 @@ def parse_size(value: str) -> int:
     return int(float(match.group(1)) * SIZE_UNITS[match.group(2).lower()])
 
 
+def positive_int(value: str) -> int:
+    """An integer >= 1 (argparse type), e.g. a number of processes."""
+    try:
+        number = int(value)
+    except ValueError:
+        number = 0
+    if number < 1:
+        raise ArgumentTypeError(f'invalid value {value!r}, use a positive integer')
+    return number
+
+
 def parse_fields(value: str):
     """Comma-separated list of field names (argparse type)."""
     return [f.strip() for f in value.split(',') if f.strip()]

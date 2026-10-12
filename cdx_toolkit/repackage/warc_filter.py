@@ -111,6 +111,8 @@ class WARCFilter:
             next_file_sequence: Number of the next output file, given the current one
                 (default: current + 1).
         """
+        if n_parallel_readers < 1:
+            raise ValueError(f'n_parallel_readers must be at least 1, not {n_parallel_readers}')
         self.source = source
         self.prefix_path = prefix_path
         self.writer_info = writer_info

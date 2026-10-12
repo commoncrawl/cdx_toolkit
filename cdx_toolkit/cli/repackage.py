@@ -12,7 +12,7 @@ from cdx_toolkit.record_io import (
 from cdx_toolkit.utils import get_version
 from cdx_toolkit.warc import fetch_wb_warc
 
-from .common import IncompleteError, add_verbose_arg, parse_size
+from .common import IncompleteError, add_verbose_arg, parse_size, positive_int
 
 
 LOGGER = logging.getLogger(__name__)
@@ -76,11 +76,11 @@ def add_parser(subparsers):
         help="fetch captures by replaying them from this wayback machine ('ia' = Internet Archive)",
     )
     source.add_argument(
-        '--processes', type=int, default=1,
+        '--processes', type=positive_int, default=1,
         help='number of worker processes, e.g. the number of vCPUs (default: 1)',
     )
     source.add_argument(
-        '--parallel-readers', type=int, default=1, metavar='N',
+        '--parallel-readers', type=positive_int, default=1, metavar='N',
         help='number of concurrent WARC readers per process (default: 1)',
     )
 
@@ -196,7 +196,7 @@ def repackage_by_warc_location(args: Namespace, records, info: dict):
 
             return run_multiprocess_repackage(
                 source=source,
-                n_processes=max(1, args.processes),
+                n_processes=args.processes,
                 readers_per_process=args.parallel_readers,
                 prefix_path=args.prefix,
                 writer_info=info,

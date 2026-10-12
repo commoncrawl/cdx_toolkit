@@ -391,3 +391,8 @@ def test_multiprocess_repackage_keeps_the_order_of_the_source(tmp_path):
         )
     records = response_records(glob.glob(str(tmp_path / 'RUN-*.warc.gz')))
     assert [r.rec_headers.get_header('WARC-Target-URI') for r in records] == [c['url'] for c in captures]
+
+
+def test_at_least_one_reader():
+    with pytest.raises(ValueError, match='n_parallel_readers'):
+        WARCFilter(source=RecordsSource([], None), prefix_path='out', writer_info={}, n_parallel_readers=0)

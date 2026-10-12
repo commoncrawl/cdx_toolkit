@@ -191,6 +191,15 @@ def test_repackage_no_input_files_found(tmpdir, capsys):
     assert 'no files found' in capsys.readouterr().err
 
 
+@pytest.mark.parametrize('option', ['--processes', '--parallel-readers'])
+@pytest.mark.parametrize('value', ['0', '-1', 'x'])
+def test_repackage_rejects_non_positive_counts(tmpdir, capsys, option, value):
+    with pytest.raises(SystemExit) as exc_info:
+        main(args=['repackage', write_captures(tmpdir, n=1), f'--prefix={tmpdir}/TEST', option, value])
+    assert exc_info.value.code == 2
+    assert 'positive integer' in capsys.readouterr().err
+
+
 def test_repackage_rejects_an_existing_series(tmpdir, capsys):
     """A second run with the same prefix would overwrite the first one's files."""
     main(args=['repackage', write_captures(tmpdir, n=1), f'--prefix={tmpdir}/TEST'])

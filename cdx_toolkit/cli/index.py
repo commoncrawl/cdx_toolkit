@@ -7,7 +7,7 @@ from cdx_toolkit.record_io import (
     FORMAT_CHOICES, canonical_format, format_from_path, import_pyarrow, open_text, write_records,
 )
 
-from .common import add_verbose_arg, parse_fields
+from .common import add_verbose_arg, parse_fields, positive_int
 
 
 LOGGER = logging.getLogger(__name__)
@@ -146,7 +146,7 @@ def add_parser(subparsers):
 
     cdx_files = parser.add_argument_group('CDX files options')
     cdx_files.add_argument(
-        '--processes', type=int, default=1, metavar='N',
+        '--processes', type=positive_int, default=1, metavar='N',
         help='number of processes, with one output per CDX file (default: 1)',
     )
 
