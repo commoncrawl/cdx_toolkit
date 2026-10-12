@@ -187,7 +187,9 @@ written to `<prefix>[-<subprefix>]-001.warc.gz`, `-002`, ..., where the
 prefix can be a local path, `s3://...` or `hf://buckets/...` (default:
 `REPACKAGE` in the current directory, e.g. `--prefix out/CC-HOMEPAGES` writes
 `out/CC-HOMEPAGES-001.warc.gz`). No file is written when there are no
-captures. The captures are
+captures. If files of this series exist already (e.g. from an earlier run),
+`cdxt repackage` stops before fetching (exit status 2): use another
+`--prefix` or `--subprefix`. The captures are
 sorted by WARC file and offset first (for faster reads); `--no-sort` keeps
 the input order and streams large inputs without keeping them in memory.
 

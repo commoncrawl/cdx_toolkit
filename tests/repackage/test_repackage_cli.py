@@ -191,6 +191,31 @@ def test_repackage_no_input_files_found(tmpdir, capsys):
     assert 'no files found' in capsys.readouterr().err
 
 
+def test_repackage_rejects_an_existing_series(tmpdir, capsys):
+    """A second run with the same prefix would overwrite the first one's files."""
+    main(args=['repackage', write_captures(tmpdir, n=1), f'--prefix={tmpdir}/TEST'])
+    first = read_warc(os.path.join(str(tmpdir), 'TEST-001.warc.gz'))['response']
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(args=['repackage', write_captures(tmpdir, n=2), f'--prefix={tmpdir}/TEST'])
+
+    assert exc_info.value.code == 2
+    assert 'exist already' in capsys.readouterr().err
+    assert read_warc(os.path.join(str(tmpdir), 'TEST-001.warc.gz'))['response'][0][1] == first[0][1]
+    assert not os.path.exists(os.path.join(str(tmpdir), 'TEST-002.warc.gz'))
+    # another subprefix is another series
+    main(args=['repackage', write_captures(tmpdir, n=2), f'--prefix={tmpdir}/TEST', '--subprefix=B'])
+    assert len(read_warc(os.path.join(str(tmpdir), 'TEST-B-001.warc.gz'))['response']) == 2
+
+
+@requires_aws_s3
+def test_repackage_rejects_an_existing_series_on_s3(tmpdir, s3_tmpdir):
+    main(args=['repackage', write_captures(tmpdir, n=1), f'--prefix={s3_tmpdir}/TEST'])
+    with pytest.raises(SystemExit) as exc_info:
+        main(args=['repackage', write_captures(tmpdir, n=1), f'--prefix={s3_tmpdir}/TEST'])
+    assert exc_info.value.code == 2
+
+
 @requires_aws_s3
 def test_repackage_over_s3(tmpdir, s3_env):
     assert_repackage(tmpdir, 's3://commoncrawl', base_prefix=tmpdir, s3_env=s3_env)

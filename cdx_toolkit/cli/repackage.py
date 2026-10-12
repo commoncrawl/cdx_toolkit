@@ -25,7 +25,8 @@ Fetch the captures listed in an index file (as written by `cdxt index`) and writ
 
 Captures with a WARC location (filename, offset, length; e.g. Common Crawl captures) are copied
 byte-for-byte from --warc-download-prefix (https://, s3:// or hf://buckets/...) into
-<prefix>[-<subprefix>]-001.warc.gz, -002, ... (local, s3:// or hf://buckets/...).
+<prefix>[-<subprefix>]-001.warc.gz, -002, ... (local, s3:// or hf://buckets/...); files of this
+series must not exist yet.
 
 Captures without a WARC location (e.g. Internet Archive captures) are replayed from a wayback
 machine with --wb and written to <prefix>[-<subprefix>]-000000.extracted.warc.gz, ...
@@ -172,6 +173,15 @@ def repackage_by_warc_location(args: Namespace, records, info: dict):
 
     from cdx_toolkit.repackage.hf_utils import is_hf_url
     from cdx_toolkit.repackage.records_source import MissingWarcLocation, RecordsSource
+    from cdx_toolkit.repackage.warc_utils import existing_warc_files
+
+    # every run numbers its files from 001: never overwrite (or mix with) the files of an earlier run
+    existing = existing_warc_files(args.prefix, args.subprefix)
+    if existing:
+        raise UsageError(
+            f'{len(existing)} WARC file(s) with this --prefix/--subprefix exist already, e.g. {existing[0]}; '
+            'use another prefix or subprefix, or remove them'
+        )
 
     try:
         source = RecordsSource(records, args.warc_download_prefix, sort=not args.no_sort)

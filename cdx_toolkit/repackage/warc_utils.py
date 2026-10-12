@@ -1,6 +1,9 @@
 from io import BytesIO
+import glob
 import logging
 import os
+import posixpath
+import re
 from pathlib import Path
 import fsspec
 from warcio.recordloader import ArcWarcRecord
@@ -8,7 +11,7 @@ from warcio import WARCWriter
 
 from warcio.recordbuilder import RecordBuilder
 
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import mimetypes
 
@@ -81,6 +84,19 @@ def generate_warc_filename(
         file_name += '.gz'
 
     return file_name
+
+
+def existing_warc_files(prefix_path: str, writer_subprefix: Optional[str] = None, gzip: bool = True) -> List[str]:
+    """The files of the series <prefix>[-<subprefix>]-NNN.warc[.gz] that already exist (local, s3://, hf://, ...)."""
+    fs, fs_prefix = fsspec.url_to_fs(prefix_path)
+    name = re.escape(posixpath.basename(fs_prefix)) + '-'
+    if writer_subprefix is not None:
+        name += re.escape(writer_subprefix) + '-'
+    name += r'\d{3,}\.warc' + (r'\.gz' if gzip else '')
+    return sorted(
+        fs.unstrip_protocol(path) for path in fs.glob(glob.escape(fs_prefix) + '-*')
+        if re.fullmatch(name, posixpath.basename(path))
+    )
 
 
 async def create_new_writer_with_header(
