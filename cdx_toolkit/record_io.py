@@ -10,7 +10,8 @@ import itertools
 import json
 import re
 import sys
-from typing import IO, Iterable, Iterator, List, Mapping, Optional
+import tempfile
+from typing import IO, Iterable, Iterator, List, Mapping, Optional, Tuple
 
 import fsspec
 
@@ -72,7 +73,11 @@ def open_text(path: str, mode: str) -> IO:
 
 
 class RecordWriter:
-    """Write records in one of TEXT_FORMATS; `fields` selects and orders the fields (default: all)."""
+    """Write records in one of TEXT_FORMATS; `fields` selects and orders the fields (default: all).
+
+    Fields with the value None are left out (JSONL, CDXJ) or empty (CSV, TSV). Without `fields`, the CSV/TSV
+    columns are the fields of the first record, and a later record with another field is an error (see
+    write_records, which finds all fields first)."""
 
     def __init__(self, fh: IO, fmt: str, fields: Optional[List[str]] = None):
         fmt = canonical_format(fmt)
@@ -86,6 +91,8 @@ class RecordWriter:
     def write(self, record: Mapping) -> None:
         record = dict(record)
         selected = {k: record[k] for k in self.fields if k in record} if self.fields else record
+        if self.fmt in ('jsonl', 'cdxj'):
+            selected = {k: v for k, v in selected.items() if v is not None}
 
         if self.fmt == 'jsonl':
             self.fh.write(json.dumps(selected, sort_keys=True, default=str) + '\n')
@@ -102,7 +109,7 @@ class RecordWriter:
                     fieldnames=self.fields or list(record.keys()),
                     delimiter='\t' if self.fmt == 'tsv' else ',',
                     lineterminator='\n',
-                    extrasaction='ignore',
+                    extrasaction='ignore' if self.fields else 'raise',
                 )
                 self._csv_writer.writeheader()
             self._csv_writer.writerow(selected)
@@ -208,7 +215,7 @@ def import_pyarrow():
 def write_parquet(records: Iterable[Mapping], path: str, fields: Optional[List[str]] = None) -> int:
     """Write records to a Parquet file (all columns are strings), returns the number of records written.
 
-    Without `fields`, the columns are the fields of the first batch of records."""
+    Without `fields`, the columns are the fields of the first batch of records (see write_records)."""
     if path == '-':
         raise ValueError('Parquet output cannot be written to stdout, please set --output')
     pa = import_pyarrow()
@@ -251,9 +258,34 @@ def read_parquet(path: str) -> Iterator[dict]:
                 yield normalize_field_names({k: v for k, v in record.items() if v is not None})
 
 
-def write_records(records: Iterable[Mapping], path: str, fmt: str, fields: Optional[List[str]] = None) -> int:
-    """Write records to a file or stdout ('-'), returns the number of records written."""
+def spool_records(records: Iterable[Mapping]) -> Tuple[List[str], Iterator[dict]]:
+    """Write the records to a temporary file; return all their fields (in the order seen) and the records."""
+    spool = tempfile.TemporaryFile('w+', encoding='utf-8')
+    fields = {}
+    for record in records:
+        record = dict(record)  # e.g. a CaptureObject of the CDX API
+        fields.update(dict.fromkeys(record))
+        spool.write(json.dumps(record, default=str) + '\n')
+    spool.seek(0)
+
+    def read_back():
+        with spool:
+            for line in spool:
+                yield json.loads(line)
+
+    return list(fields), read_back()
+
+
+def write_records(records: Iterable[Mapping], path: str, fmt: str, fields: Optional[List[str]] = None,
+                  fixed_schema: bool = False) -> int:
+    """Write records to a file or stdout ('-'), returns the number of records written.
+
+    The columns of CSV, TSV and Parquet are `fields`; without them, the fields of the first record if all
+    records have the same fields (`fixed_schema`, e.g. SQL results), otherwise all fields of all records,
+    found by reading the records into a temporary file first."""
     fmt = canonical_format(fmt)
+    if fmt in ('csv', 'tsv', 'parquet') and not fields and not fixed_schema:
+        fields, records = spool_records(records)
     if fmt == 'parquet':
         return write_parquet(records, path, fields)
     n = 0

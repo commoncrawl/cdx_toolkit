@@ -127,7 +127,8 @@ def add_parser(subparsers):
         '--output-format', choices=FORMAT_CHOICES,
         help=('output format (default: detected from the --output extension, jsonl for stdout); cdx is the same as '
               "cdxj: Common Crawl's index files have the .cdx extension but use the CDXJ format (crawl index JSON); "
-              'parquet needs cdx_toolkit[parquet]'),
+              'parquet needs cdx_toolkit[parquet]; without --fields, CSV, TSV and Parquet output of the CDX API and '
+              'CDX files is written once all captures are read (to include all fields)'),
     )
     output.add_argument(
         '--fields', type=parse_fields, metavar='FIELD,...',
@@ -247,5 +248,7 @@ def run(args: Namespace, cmdline: str):
             fh.write(f'{count}\n')
         return
 
-    n = write_records(iter_index_records(backend, query), args.output, output_format, args.fields)
+    n = write_records(
+        iter_index_records(backend, query), args.output, output_format, args.fields, fixed_schema=backend.fixed_schema
+    )
     LOGGER.info('wrote %d captures to %s', n, args.output)

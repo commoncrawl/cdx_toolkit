@@ -144,3 +144,47 @@ def test_is_glob(path, glob):
 def test_no_globs_over_http():
     with pytest.raises(ValueError, match='globs do not work with http'):
         list(read_records('https://data.commoncrawl.org/cc-index/collections/CC-MAIN-2024-30/indexes/cdx-*.gz'))
+
+
+@pytest.mark.parametrize('fmt', ['csv', 'tsv', 'parquet'])
+def test_fields_that_appear_later_are_kept(tmp_path, fmt):
+    if fmt == 'parquet':
+        pytest.importorskip('pyarrow')
+    records = [{'url': 'http://example.com/'}, {'url': 'http://example.com/x', 'redirect': 'http://example.com/y'}]
+    path = str(tmp_path / f'out.{fmt}')
+    assert write_records(iter(records), path, fmt) == 2
+    assert list(read_records(path)) == [dict(records[0], **({} if fmt == 'parquet' else {'redirect': ''})), records[1]]
+
+
+@pytest.mark.parametrize('fmt', ['csv', 'tsv'])
+def test_fixed_schema_with_null_values(tmp_path, fmt):
+    """SQL results: every record has all columns, NULL is None (empty in CSV/TSV, left out in JSONL)."""
+    records = [{'url': 'http://example.com/', 'redirect': None}, {'url': 'http://example.com/x', 'redirect': 'y'}]
+    path = str(tmp_path / f'out.{fmt}')
+    write_records(iter(records), path, fmt, fixed_schema=True)
+    assert list(read_records(path)) == [{'url': 'http://example.com/', 'redirect': ''}, records[1]]
+
+    path = str(tmp_path / 'out.jsonl')
+    write_records(iter(records), path, 'jsonl', fixed_schema=True)
+    assert list(read_records(path)) == [{'url': 'http://example.com/'}, records[1]]
+
+
+def test_csv_writer_does_not_drop_fields():
+    writer = RecordWriter(io.StringIO(), 'csv')
+    writer.write({'url': 'a'})
+    with pytest.raises(ValueError):
+        writer.write({'url': 'b', 'redirect': 'c'})
+
+
+def test_csv_of_capture_objects(tmp_path):
+    """CDX API captures are CaptureObjects (mappings, not dicts)."""
+    from cdx_toolkit import CaptureObject
+
+    captures = [CaptureObject({'url': 'http://example.com/', 'status': '200'}, wb=None),
+                CaptureObject({'url': 'http://example.com/x', 'status': '200', 'redirect': 'y'}, wb=None)]
+    path = str(tmp_path / 'out.csv')
+    write_records(iter(captures), path, 'csv')
+    assert list(read_records(path)) == [
+        {'url': 'http://example.com/', 'status': '200', 'redirect': ''},
+        {'url': 'http://example.com/x', 'status': '200', 'redirect': 'y'},
+    ]

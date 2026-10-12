@@ -67,7 +67,8 @@ def test_normalize_row():
         'my_column': 'x',
     }
     assert normalize_row(row) == {
-        'url': 'https://example.com/', 'timestamp': '20240713102233', 'status': '200', 'offset': '10', 'my_column': 'x',
+        'url': 'https://example.com/', 'timestamp': '20240713102233', 'status': '200', 'offset': '10',
+        'languages': None, 'my_column': 'x',
     }
     # Athena returns strings
     assert normalize_row({'fetch_time': '2024-07-13 10:22:33.000'}) == {'timestamp': '20240713102233'}

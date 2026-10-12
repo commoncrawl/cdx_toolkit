@@ -82,12 +82,14 @@ def confirm_cost(estimate: Optional[CostEstimate], confirmed: bool) -> None:
 
 
 def normalize_row(row: Mapping) -> dict:
-    """Columnar index row -> record with CDX field names; timestamps as YYYYMMDDhhmmss strings."""
+    """Columnar index row -> record with CDX field names; timestamps as YYYYMMDDhhmmss strings.
+
+    NULL values stay None, so that every record has all columns (see IndexBackend.fixed_schema)."""
     record = {}
     for column, value in row.items():
         if value is None:
-            continue
-        if isinstance(value, datetime.datetime):
+            pass
+        elif isinstance(value, datetime.datetime):
             if value.tzinfo is not None:
                 value = value.astimezone(datetime.timezone.utc)
             value = value.strftime('%Y%m%d%H%M%S')
@@ -150,6 +152,7 @@ class SqlBackend(IndexBackend):
     """Common logic of the SQL backends: guided query building, cost guard, row normalization."""
 
     engine = ''
+    fixed_schema = True
     supported_options = frozenset({
         'urls', 'hostnames', 'domains', 'crawl', 'from_ts', 'to', 'languages', 'limit', 'sql', 'url_fgrep',
         'url_fgrepv',

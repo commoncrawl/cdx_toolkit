@@ -17,6 +17,8 @@ class IndexBackend(ABC):
 
     name: str = ''
     supported_options: FrozenSet[str] = frozenset()
+    # True if all records have the same fields (in the same order), e.g. the columns of a SQL result
+    fixed_schema: bool = False
 
     def validate(self, query: IndexQuery) -> None:
         unsupported = sorted(query.options_used() - self.supported_options)
