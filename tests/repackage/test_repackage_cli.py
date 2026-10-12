@@ -5,6 +5,7 @@ records are fetched from data.commoncrawl.org or s3://commoncrawl, which are moc
 recorded records (see tests/conftest.py).
 """
 import gzip
+import multiprocessing
 import os
 from typing import List, Optional
 
@@ -214,6 +215,10 @@ def test_repackage_over_http_to_s3_with_parallel_readers(tmpdir, s3_tmpdir):
 
 
 @requires_aws_s3
-def test_repackage_over_s3_to_local_with_processes(tmpdir, s3_env):
-    # the worker processes use the mocked S3 too (it is configured with environment variables)
+def test_repackage_over_s3_to_local_with_processes(tmpdir, s3_env, monkeypatch):
+    # the worker processes use the mocked S3 too: it is configured with environment variables, which a spawned
+    # process gets from this process (a forkserver, the default since Python 3.14 on Linux, could have been
+    # started before, with other environment variables, e.g. real AWS credentials)
+    spawn = multiprocessing.get_context('spawn')
+    monkeypatch.setattr('cdx_toolkit.repackage.multiprocess.multiprocessing.get_context', lambda *args: spawn)
     assert_repackage(tmpdir, 's3://commoncrawl', base_prefix=tmpdir, extra_args=['--processes=2'], s3_env=s3_env)
