@@ -19,6 +19,7 @@ from cdx_toolkit.repackage.http_range import RangeError
 from cdx_toolkit.repackage.local_writer import LocalFileWriter
 from cdx_toolkit.repackage.records_source import RecordsSource
 from cdx_toolkit.repackage.warc_filter import WARCFilter
+from tests.conftest import InlineExecutor
 from tests.fake_warc_server import FakeWarcServer
 from tests.conftest import requires_aioboto3
 
@@ -323,22 +324,6 @@ def test_no_s3_client_without_s3(tmp_path):
         WARCFilter(source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'),
                    writer_info={}).filter()
     session.assert_not_called()
-
-
-class InlineExecutor:
-    """ProcessPoolExecutor stand-in that runs the workers in this process (patches apply, coverage is measured)."""
-
-    def __init__(self, max_workers, mp_context, initializer, initargs):
-        initializer(*initargs)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-    def map(self, fn, items):
-        return [fn(item) for item in items]
 
 
 @pytest.mark.parametrize('remote', [False, True])

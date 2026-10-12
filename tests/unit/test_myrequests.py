@@ -1,10 +1,13 @@
 import requests
+import responses
 from unittest.mock import patch
 import pytest
 from cdx_toolkit.myrequests import myrequests_get
 
 
+@responses.activate
 def test_get_without_error():
+    responses.add(responses.GET, 'http://example.com/', body='<html></html>')
     resp = myrequests_get('http://example.com')
 
     assert resp.status_code == 200

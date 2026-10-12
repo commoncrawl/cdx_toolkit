@@ -33,6 +33,7 @@ pytest-sugar>=0.9.4
 coveralls>=3.1.0
 flake8>=7.3.0
 responses==0.25.8
+moto[server]>=5
 pre-commit>=4.3.0
 
 # packaging

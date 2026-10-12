@@ -1,6 +1,19 @@
+"""Shared test fixtures.
+
+By default, the tests make no remote requests:
+- the CDX API and HTTP requests (data.commoncrawl.org) are mocked with `responses` and recorded data
+  (DISABLE_MOCK_RESPONSES=1 sends them to the real servers, see mock_response_from_jsonl)
+- S3 is a local moto server (see the s3_env fixture and requires_aws_s3)
+
+CDXT_LIVE_TESTS=1 runs the S3 tests against AWS instead, and enables the tests that need AWS and
+cannot be mocked (Athena, DuckDB over s3://commoncrawl; see requires_live_aws).
+"""
+import gzip
 import json
 import os
+import re
 import uuid
+import urllib.request
 from pathlib import Path
 import pytest
 
@@ -31,7 +44,7 @@ except ImportError:  # pragma: no cover - exercised in minimal installs
     _HAS_FSSPEC = False
 
 try:
-    import duckdb  # noqa: F401
+    import duckdb
     _HAS_DUCKDB = True
 except ImportError:  # pragma: no cover - exercised in minimal installs
     _HAS_DUCKDB = False
@@ -41,6 +54,13 @@ try:
     _HAS_AIOBOTO3 = True
 except ImportError:  # pragma: no cover - exercised in minimal installs
     _HAS_AIOBOTO3 = False
+
+try:
+    import moto.server  # noqa: F401
+    import s3fs as _s3fs  # noqa: F401
+    _HAS_MOTO = _HAS_AIOBOTO3
+except ImportError:  # pragma: no cover - exercised in minimal installs
+    _HAS_MOTO = False
 
 import functools
 from typing import Dict, Optional
@@ -58,6 +78,7 @@ TEST_ATHENA_S3_LOCATION = 's3://commoncrawl-ci-temp/athena-results/'
 TEST_ATHENA_DATABASE = 'ccindex'
 DISABLE_ATHENA_TESTS = bool(os.environ.get('CDXT_DISABLE_ATHENA_TESTS', False))
 DISABLE_S3_TESTS = bool(os.environ.get('CDXT_DISABLE_S3_TESTS', False))
+LIVE_TESTS = bool(os.environ.get('CDXT_LIVE_TESTS', False))
 
 # Cache for AWS S3/Athena access check to avoid repeated network calls
 _aws_s3_access_cache = None
@@ -104,18 +125,28 @@ def check_aws_s3_access():
     return _aws_s3_access_cache
 
 
-def requires_aws_s3(func):
-    """Pytest decorator that skips test if AWS S3 access is not available or disabled."""
+def requires_live_aws(func):
+    """Pytest decorator for tests that need AWS itself (not mockable, e.g. DuckDB over s3://commoncrawl):
+    they only run with CDXT_LIVE_TESTS=1 and AWS S3 access."""
+    if not LIVE_TESTS:
+        return pytest.mark.skip(reason='needs AWS; set CDXT_LIVE_TESTS=1 to run it')(func)
     if not _HAS_BOTOCORE or not _HAS_FSSPEC:
-        return pytest.mark.skipif(
-            True, reason='S3 dependencies are not installed; install warcio[s3] to enable S3 tests.'
-        )(func)
-
+        return pytest.mark.skip(reason='S3 dependencies are not installed; install cdx_toolkit[s3]')(func)
     return pytest.mark.skipif(DISABLE_S3_TESTS, reason='AWS S3 access is disabled via environment variable.')(
         pytest.mark.skipif(
             not check_aws_s3_access(), reason='AWS S3 access not available (no credentials or permissions)'
         )(func)
     )
+
+
+def requires_aws_s3(func):
+    """Pytest decorator for S3 tests: they run against a local moto server (the s3_env fixture), or against
+    AWS with CDXT_LIVE_TESTS=1."""
+    if LIVE_TESTS:
+        return pytest.mark.usefixtures('s3_env')(requires_live_aws(func))
+    if not _HAS_MOTO:
+        return pytest.mark.skip(reason='moto, s3fs and aioboto3 are needed to mock S3; install cdx_toolkit[all]')(func)
+    return pytest.mark.usefixtures('s3_env')(func)
 
 
 def check_aws_athena_query_execution_access():
@@ -161,7 +192,9 @@ def check_aws_athena_access():
 
 
 def requires_aws_athena(func):
-    """Pytest decorator that skips test if AWS Athena access is not available."""
+    """Pytest decorator that skips test if AWS Athena access is not available (needs CDXT_LIVE_TESTS=1)."""
+    if not LIVE_TESTS:
+        return pytest.mark.skip(reason='needs AWS Athena; set CDXT_LIVE_TESTS=1 to run it')(func)
     if not _HAS_BOTO3:
         return pytest.mark.skipif(
             True, reason='S3 dependencies are not installed; install cdx_toolkit[s3] to enable Athena tests.'
@@ -188,8 +221,175 @@ def requires_aioboto3(func):
     )(func)
 
 
+# The WARC records of the first 10 captures of tests/data/repackage/filtered_CC-MAIN-2024-30_cdx-00187.gz,
+# recorded from data.commoncrawl.org: {(filename, offset, length): bytes}
+WARC_RECORDS = {}
+with open(TEST_DATA_PATH / 'repackage' / 'warc_records.jsonl') as _f:
+    for _line in _f:
+        _r = json.loads(_line)
+        WARC_RECORDS[(_r['filename'], _r['offset'], _r['length'])] = base64.b64decode(_r['data'])
+
+
+def _data_commoncrawl_range(request):
+    """responses callback: a range request to data.commoncrawl.org, served from WARC_RECORDS."""
+    filename = request.url.split('://', 1)[1].split('/', 1)[1]
+    start, end = (int(n) for n in request.headers['Range'][len('bytes='):].split('-'))
+    data = WARC_RECORDS.get((filename, start, end - start + 1))
+    if data is None:
+        return 404, {}, f'no recorded WARC record for {filename} bytes {start}-{end} (see tests/conftest.py)'
+    return 206, {'Content-Range': f'bytes {start}-{end}/*'}, data
+
+
 @pytest.fixture
-def s3_tmpdir():
+def mock_data_commoncrawl():
+    """WARC record downloads from data.commoncrawl.org are served from recorded data (unless
+    DISABLE_MOCK_RESPONSES=1); other requests made with `requests` fail, unless the test adds mock data (e.g.
+    with mock_response_from_jsonl)."""
+    if os.environ.get('DISABLE_MOCK_RESPONSES'):
+        yield None
+        return
+    responses.start()
+    try:
+        responses.add_callback(responses.GET, re.compile(r'https://data\.commoncrawl\.org/.*'),
+                               callback=_data_commoncrawl_range)
+        yield responses.mock
+    finally:
+        responses.stop()
+        responses.reset()
+
+
+# crawl and host of the captures of WARC_RECORDS
+LOCAL_INDEX_CRAWL = 'CC-MAIN-2024-30'
+LOCAL_INDEX_HOST = 'bibliotheque.missiondefrance.fr'
+
+
+@pytest.fixture
+def local_url_index(tmp_path):
+    """A columnar URL index like Common Crawl's (<dir>/crawl=.../subset=warc/*.parquet) with the captures of
+    WARC_RECORDS, and captures that are not selected by the tests: of another host, and of another crawl."""
+    from cdx_toolkit.record_io import parse_cdxj_line
+
+    with gzip.open(TEST_DATA_PATH / 'repackage' / 'filtered_CC-MAIN-2024-30_cdx-00187.gz', 'rt') as f:
+        captures = [parse_cdxj_line(f.readline()) for _ in range(len(WARC_RECORDS))]
+    rows = {LOCAL_INDEX_CRAWL: captures + [dict(captures[0], url='https://example.com/', urlkey='com,example)/')],
+            'CC-MAIN-2024-26': [captures[0]]}
+
+    base = tmp_path / 'url-index'
+    con = duckdb.connect()
+    for crawl, crawl_rows in rows.items():
+        path = base / f'crawl={crawl}' / 'subset=warc'
+        path.mkdir(parents=True)
+        con.execute('''CREATE OR REPLACE TABLE idx (
+            url_surtkey VARCHAR, url VARCHAR, url_host_name VARCHAR, url_host_registered_domain VARCHAR,
+            url_host_tld VARCHAR, fetch_time TIMESTAMP, fetch_status SMALLINT, content_mime_type VARCHAR,
+            content_mime_detected VARCHAR, content_digest VARCHAR, content_languages VARCHAR, content_charset VARCHAR,
+            fetch_redirect VARCHAR, warc_filename VARCHAR, warc_record_offset INTEGER, warc_record_length INTEGER)''')
+        for c in crawl_rows:
+            host = c['url'].split('/')[2]
+            values = "?, ?, ?, ?, ?, strptime(?, '%Y%m%d%H%M%S'), ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?"
+            con.execute(f'INSERT INTO idx VALUES ({values})', [
+                c['urlkey'], c['url'], host, '.'.join(host.split('.')[-2:]), host.split('.')[-1], c['timestamp'],
+                int(c['status']), c['mime'], c['mime-detected'], c['digest'], c['languages'], c.get('charset'),
+                c['filename'], int(c['offset']), int(c['length']),
+            ])
+        con.execute(f"COPY idx TO '{path}/part-00000.parquet' (FORMAT parquet)")
+    return base
+
+
+class InlineExecutor:
+    """ProcessPoolExecutor stand-in that runs the workers in this process (mocks apply, coverage is measured)."""
+
+    def __init__(self, max_workers=None, mp_context=None, initializer=None, initargs=()):
+        if initializer:
+            initializer(*initargs)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def map(self, fn, items):
+        return [fn(item) for item in items]
+
+
+class S3Env:
+    """S3 for a test: a local moto server with the buckets commoncrawl (the WARC files of WARC_RECORDS) and
+    TEST_S3_BUCKET, or AWS itself (CDXT_LIVE_TESTS=1)."""
+
+    def __init__(self, offsets=None):
+        # (filename, offset) -> offset in the mocked WARC file, which holds only the recorded records
+        self.offsets = offsets
+
+    def capture(self, capture):
+        """The capture with the offset of its record in s3://commoncrawl (the mocked files are short)."""
+        if self.offsets is None:
+            return capture
+        offset = self.offsets[(capture['filename'], int(capture['offset']))]
+        return dict(capture, offset=type(capture['offset'])(offset))
+
+
+@pytest.fixture(scope='session')
+def moto_server():
+    import logging
+    from moto.server import ThreadedMotoServer
+
+    logging.getLogger('werkzeug').setLevel(logging.WARNING)
+    server = ThreadedMotoServer(ip_address='127.0.0.1', port=0, verbose=False)
+    server.start()
+    host, port = server.get_host_and_port()
+    yield f'http://{host}:{port}'
+    server.stop()
+
+
+@pytest.fixture
+def s3_env(request, monkeypatch, tmp_path):
+    """S3 for a test, see S3Env. The moto server is configured with environment variables only, so that also
+    worker processes (cdxt repackage --processes) use it."""
+    if LIVE_TESTS:
+        yield S3Env()
+        return
+
+    import fsspec.config
+    import s3fs
+    from cdx_toolkit import aws
+
+    endpoint = request.getfixturevalue('moto_server')
+    # path-style addressing: the endpoint is an IP address (an explicit S3 setting of the AWS config file wins
+    # over cdxt's defaults)
+    config_file = tmp_path / 'aws-config'
+    config_file.write_text('[default]\nregion = us-east-1\ns3 =\n  addressing_style = path\n')
+    for name in ('AWS_PROFILE', 'AWS_SESSION_TOKEN', 'AWS_REGION', 'AWS_DEFAULT_REGION', 'AWS_MAX_ATTEMPTS',
+                 'AWS_RETRY_MODE', 'CDXT_AWS_DEFAULTS'):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv('AWS_ENDPOINT_URL_S3', endpoint)
+    monkeypatch.setenv('AWS_CONFIG_FILE', str(config_file))
+    monkeypatch.setenv('AWS_SHARED_CREDENTIALS_FILE', str(tmp_path / 'aws-credentials'))
+    monkeypatch.setenv('AWS_ACCESS_KEY_ID', 'testing')
+    monkeypatch.setenv('AWS_SECRET_ACCESS_KEY', 'testing')
+    monkeypatch.setitem(fsspec.config.conf, 's3', {})
+    aws.user_aws_config.cache_clear()
+    s3fs.S3FileSystem.clear_instance_cache()
+
+    urllib.request.urlopen(urllib.request.Request(f'{endpoint}/moto-api/reset', method='POST'))
+    client = boto3.client('s3', endpoint_url=endpoint, region_name='us-east-1')
+    client.create_bucket(Bucket='commoncrawl')
+    client.create_bucket(Bucket=TEST_S3_BUCKET)
+    offsets, files = {}, {}
+    for (filename, offset, _), data in sorted(WARC_RECORDS.items()):
+        offsets[(filename, offset)] = len(files.get(filename, b''))
+        files[filename] = files.get(filename, b'') + data
+    for filename, data in files.items():
+        client.put_object(Bucket='commoncrawl', Key=filename, Body=data)
+
+    yield S3Env(offsets)
+
+    aws.user_aws_config.cache_clear()
+    s3fs.S3FileSystem.clear_instance_cache()
+
+
+@pytest.fixture
+def s3_tmpdir(s3_env):
     """S3 equivalent of tmpdir - provides a temporary S3 path and handles cleanup."""
     bucket_name = TEST_S3_BUCKET
 

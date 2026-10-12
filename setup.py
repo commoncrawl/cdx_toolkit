@@ -11,6 +11,8 @@ packages = find_packages(include=['cdx_toolkit*'])
 requires = ['requests', 'warcio', 'fsspec', 'aiofiles', 'url-is-in>=0.1.1']
 
 test_requirements = ['pytest', 'pytest-cov', 'flake8', 'responses']
+# S3 mocked with a local server in the S3 tests (not in `test`: it installs boto3 for the minimal tests)
+test_s3_requirements = ['moto[server]']
 # S3 reads/writes (index files, WARCs)
 optional_s3_requirements = ['fsspec[s3]', 'botocore', 'aioboto3']
 # `cdxt index athena://...`
@@ -36,7 +38,7 @@ extras_require = {
     'package': package_requirements,
     'dev': package_requirements,
     'all': (
-        test_requirements + package_requirements + dev_requirements
+        test_requirements + test_s3_requirements + package_requirements + dev_requirements
         + optional_s3_requirements + optional_athena_requirements
         + optional_duckdb_requirements + optional_hf_requirements + optional_parquet_requirements
     ),

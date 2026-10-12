@@ -3,8 +3,11 @@ import sys
 import os
 import platform
 import logging
+import re
 
 import pytest
+import requests
+import responses
 
 from cdx_toolkit.cli import main
 
@@ -242,8 +245,14 @@ def test_multi_ia(capsys, caplog):
     multi_helper(testdata, capsys, caplog)
 
 
+@responses.activate
 def test_multi_misc_not_ia(capsys, caplog):
-    # this is the test case before slow_ci -> break
+    # this is the test case before slow_ci -> break; the hostname does not exist (no DNS request: mocked)
+    dns_error = requests.exceptions.ConnectionError(
+        "HTTPSConnectionPool(host='web.arc4567hive.org', port=443): Failed to resolve 'web.arc4567hive.org' "
+        '([Errno 8] nodename nor servname provided, or not known)'
+    )
+    responses.add(responses.GET, re.compile(r'https://web\.arc4567hive\.org/.*'), body=dns_error)
     testdata = (
         '-v -v index https://web.arc4567hive.org/cdx/search/cdx --limit 10 --url commoncrawl.org/*',
         {'exception': ValueError},

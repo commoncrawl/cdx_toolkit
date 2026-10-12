@@ -1,7 +1,10 @@
+import pytest
+
 from tests.conftest import requires_aws_s3
 from cdx_toolkit.warc import fetch_warc_record
 
 
+@pytest.mark.usefixtures('mock_data_commoncrawl')
 def test_fetch_warc_record_from_http():
     encoding = 'utf-8'
     capture = {
@@ -28,7 +31,7 @@ def test_fetch_warc_record_from_http():
 
 
 @requires_aws_s3
-def test_fetch_warc_record_from_s3():
+def test_fetch_warc_record_from_s3(s3_env):
     encoding = 'utf-8'
     capture = {
         'url': 'https://bibliotheque.missiondefrance.fr/index.php?lvl=bulletin_display&id=319',
@@ -45,7 +48,7 @@ def test_fetch_warc_record_from_s3():
     }
     warc_download_prefix = 's3://commoncrawl'
 
-    record = fetch_warc_record(capture, warc_download_prefix)
+    record = fetch_warc_record(s3_env.capture(capture), warc_download_prefix)
     record_content = record.content_stream().read().decode(encoding, errors='ignore')
 
     assert record.rec_type == 'response'

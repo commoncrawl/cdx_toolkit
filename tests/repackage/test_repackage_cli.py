@@ -1,7 +1,8 @@
 """End-to-end tests of `cdxt repackage` with the async WARC fetcher.
 
 The captures are the first records of a Common Crawl CDX file (a CDXJ file); the WARC
-records are fetched from data.commoncrawl.org (or s3://commoncrawl with AWS credentials).
+records are fetched from data.commoncrawl.org or s3://commoncrawl, which are mocked with
+recorded records (see tests/conftest.py).
 """
 import gzip
 import os
@@ -12,21 +13,28 @@ import pytest
 from warcio.archiveiterator import ArchiveIterator
 
 from cdx_toolkit.cli import main
-from cdx_toolkit.record_io import read_records, write_records
+from cdx_toolkit.record_io import parse_cdxj_line, read_records, write_records
 
-from tests.conftest import requires_aws_s3, TEST_DATA_PATH
+from tests.conftest import InlineExecutor, requires_aws_s3, TEST_DATA_PATH
+
+
+pytestmark = pytest.mark.usefixtures('mock_data_commoncrawl')
 
 
 CDX_PATH = TEST_DATA_PATH / 'repackage' / 'filtered_CC-MAIN-2024-30_cdx-00187.gz'
 METADATA_RECORD_PATH = TEST_DATA_PATH / 'repackage/url_list.txt'
 
 
-def write_captures(tmpdir, n: int = 10, name: str = 'captures.cdxj') -> str:
-    """The first n captures of the CDX fixture."""
+def write_captures(tmpdir, n: int = 10, name: str = 'captures.cdxj', s3_env=None) -> str:
+    """The first n captures of the CDX fixture (with their offsets in the mocked s3://commoncrawl, if given)."""
     path = os.path.join(str(tmpdir), name)
-    with gzip.open(CDX_PATH, 'rt') as f_in, open(path, 'w') as f_out:
-        for _ in range(n):
-            f_out.write(f_in.readline())
+    with gzip.open(CDX_PATH, 'rt') as f_in:
+        lines = [f_in.readline() for _ in range(n)]
+    if s3_env:
+        write_records([s3_env.capture(parse_cdxj_line(line)) for line in lines], path, 'cdxj')
+    else:
+        with open(path, 'w') as f_out:
+            f_out.writelines(lines)
     return path
 
 
@@ -45,13 +53,14 @@ def assert_repackage(
     base_prefix,
     extra_args: Optional[List[str]] = None,
     warc_filename: str = 'TEST_warc_by_index-001.warc.gz',
+    s3_env=None,
 ):
     base_prefix = str(base_prefix)
     main(
         args=[
             '-v',
             'repackage',
-            write_captures(tmpdir),
+            write_captures(tmpdir, s3_env=s3_env if warc_download_prefix.startswith('s3://') else None),
             '--no-sort',  # keep the order of the CDX file
             '--add-metadata-record',
             str(METADATA_RECORD_PATH),
@@ -108,7 +117,10 @@ def test_repackage_over_http_with_parallel_readers(tmpdir):
     assert_repackage(tmpdir, 'https://data.commoncrawl.org', base_prefix=tmpdir, extra_args=['--parallel-readers=3'])
 
 
-def test_repackage_over_http_with_processes(tmpdir):
+def test_repackage_over_http_with_processes(tmpdir, monkeypatch, mock_data_commoncrawl):
+    if mock_data_commoncrawl is not None:
+        # the HTTP mock only applies in this process
+        monkeypatch.setattr('cdx_toolkit.repackage.multiprocess.ProcessPoolExecutor', InlineExecutor)
     assert_repackage(tmpdir, 'https://data.commoncrawl.org', base_prefix=tmpdir, extra_args=['--processes=2'])
 
 
@@ -179,19 +191,20 @@ def test_repackage_no_input_files_found(tmpdir, capsys):
 
 
 @requires_aws_s3
-def test_repackage_over_s3(tmpdir):
-    assert_repackage(tmpdir, 's3://commoncrawl', base_prefix=tmpdir)
+def test_repackage_over_s3(tmpdir, s3_env):
+    assert_repackage(tmpdir, 's3://commoncrawl', base_prefix=tmpdir, s3_env=s3_env)
 
 
 @requires_aws_s3
-def test_repackage_over_s3_to_s3(tmpdir, s3_tmpdir):
-    assert_repackage(tmpdir, 's3://commoncrawl', base_prefix=s3_tmpdir)
+def test_repackage_over_s3_to_s3(tmpdir, s3_tmpdir, s3_env):
+    assert_repackage(tmpdir, 's3://commoncrawl', base_prefix=s3_tmpdir, s3_env=s3_env)
 
 
 @requires_aws_s3
-def test_repackage_over_s3_to_s3_with_parallel_readers(tmpdir, s3_tmpdir):
+def test_repackage_over_s3_to_s3_with_parallel_readers(tmpdir, s3_tmpdir, s3_env):
     assert_repackage(
-        tmpdir, 's3://commoncrawl', base_prefix=s3_tmpdir, extra_args=['--parallel-readers=3', '--is-part-of=foobar']
+        tmpdir, 's3://commoncrawl', base_prefix=s3_tmpdir, extra_args=['--parallel-readers=3', '--is-part-of=foobar'],
+        s3_env=s3_env,
     )
 
 
@@ -201,5 +214,6 @@ def test_repackage_over_http_to_s3_with_parallel_readers(tmpdir, s3_tmpdir):
 
 
 @requires_aws_s3
-def test_repackage_over_s3_to_local_with_processes(tmpdir):
-    assert_repackage(tmpdir, 's3://commoncrawl', base_prefix=tmpdir, extra_args=['--processes=2'])
+def test_repackage_over_s3_to_local_with_processes(tmpdir, s3_env):
+    # the worker processes use the mocked S3 too (it is configured with environment variables)
+    assert_repackage(tmpdir, 's3://commoncrawl', base_prefix=tmpdir, extra_args=['--processes=2'], s3_env=s3_env)

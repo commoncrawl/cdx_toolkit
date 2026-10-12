@@ -93,7 +93,7 @@ jobs:
             core.exportVariable('CDXT_CC_INDEX_MIN_RETRY_INTERVAL', '0.01')
             core.exportVariable('CDXT_CC_DATA_MIN_RETRY_INTERVAL', '0.01')
             core.exportVariable('CDXT_IA_MIN_RETRY_INTERVAL', '0.01')
-            core.exportVariable('DISABLE_ATHENA_TESTS', '1')
+            core.exportVariable('CDXT_DISABLE_ATHENA_TESTS', '1')
             core.exportVariable('LOGLEVEL', 'DEBUG')
 
       - name: Lint code
@@ -152,7 +152,7 @@ jobs:
             core.exportVariable('CDXT_CC_INDEX_MIN_RETRY_INTERVAL', '0.01')
             core.exportVariable('CDXT_CC_DATA_MIN_RETRY_INTERVAL', '0.01')
             core.exportVariable('CDXT_IA_MIN_RETRY_INTERVAL', '0.01')
-            core.exportVariable('DISABLE_ATHENA_TESTS', '1')
+            core.exportVariable('CDXT_DISABLE_ATHENA_TESTS', '1')
             core.exportVariable('LOGLEVEL', 'DEBUG')
 
       - name: test minimal

@@ -34,11 +34,19 @@ make test
 make unit
 ```
 
-By default, all remote requests are mocked. To change this behaviour and actually call remote APIs (if you run this from a whitelisted IP address), the following environment variable can be set:
+By default, all remote requests are mocked: the CDX API and HTTP downloads are served from recorded data in `tests/data`, and S3 is a local [moto](https://github.com/getmoto/moto) server (installed with `.[all]`; without it, the S3 tests are skipped). To change this behaviour and actually call remote APIs (if you run this from a whitelisted IP address), the following environment variable can be set:
 
 ```bash
 export DISABLE_MOCK_RESPONSES=1
 ```
+
+The S3 tests run against AWS, and the tests that need AWS and cannot be mocked (Athena, DuckDB queries of Common Crawl's index on S3) run at all, only with AWS credentials and:
+
+```bash
+export CDXT_LIVE_TESTS=1
+```
+
+The WARC records that the `cdxt repackage` tests download (from `data.commoncrawl.org` or `s3://commoncrawl`) are recorded in `tests/data/repackage/warc_records.jsonl`, and DuckDB queries a small local index built from the same captures (the `local_url_index` fixture in `tests/conftest.py`).
 
 If the remote APIs change, new mock data can be semi-automatically collected by setting another environment variable,  running corresponding unit tests, and overwriting existing mock data in `tests/data/mock_responses`:
 
