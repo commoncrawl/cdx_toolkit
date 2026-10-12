@@ -303,3 +303,32 @@ def test_index_duckdb_url_patterns(parquet_index, capsys):
     assert urls('--url', 'example.com/x') == ['https://example.com/x']
     assert urls('--url', 'example.com/*') == ['https://example.com/', 'https://example.com/', 'https://example.com/x']
     assert urls('--url', '*.example.org', '--url', 'example.com/x') == ['https://example.com/x', 'https://example.org/']
+
+
+@requires_duckdb
+def test_sql_without_url_column_to_repackage(parquet_index, tmp_path, capsys):
+    """A --sql query that selects only the WARC location is enough for repackaging."""
+    from tests.fake_warc_server import FakeWarcServer
+
+    server = FakeWarcServer('https://data.example.org')
+    capture, = server.add_captures('a.warc.gz', ['https://example.com/x'])
+    files = f'{parquet_index}/*/*/*.parquet'
+    sql = tmp_path / 'query.sql'
+    sql.write_text(
+        f"SELECT warc_filename, {capture['offset']} AS warc_record_offset, {capture['length']} AS warc_record_length "
+        f"FROM read_parquet('{files}') WHERE url = 'https://example.com/x' AND crawl = 'CC-MAIN-2024-33'"
+    )
+    captures = tmp_path / 'captures.jsonl'
+    main(['index', files, '--sql', str(sql), '--yes', '-o', str(captures)])
+    assert [json.loads(line) for line in captures.read_text().splitlines()] == [
+        {'filename': 'a.warc.gz', 'offset': capture['offset'], 'length': capture['length']}
+    ]
+    with patch('cdx_toolkit.repackage.data_classes.myrequests_get', side_effect=server.get):
+        main(['repackage', str(captures), '--prefix', str(tmp_path / 'out'),
+              '--warc-download-prefix', 'https://data.example.org'])
+    assert len(list(tmp_path.glob('out-*.warc.gz'))) == 1
+
+    with pytest.raises(SystemExit) as exc:
+        main(['index', files, '--sql', str(sql), '--yes', '--url-fgrep', 'example'])
+    assert exc.value.code == 2
+    assert '--url-fgrep and --url-fgrepv need captures with a url' in capsys.readouterr().err

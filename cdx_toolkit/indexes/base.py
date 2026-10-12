@@ -48,8 +48,13 @@ def iter_index_records(backend: IndexBackend, query: IndexQuery) -> Iterator[Map
 
 
 def filter_by_url(records: Iterable[Mapping], url_fgrep=None, url_fgrepv=None) -> Iterator[Mapping]:
+    if not (url_fgrep or url_fgrepv):
+        yield from records  # records need no url, e.g. of a --sql query that selects only the WARC location
+        return
     for record in records:
-        url = record['url']
+        url = record.get('url')
+        if url is None:
+            raise UsageError('--url-fgrep and --url-fgrepv need captures with a url (e.g. SELECT url in --sql)')
         if url_fgrep and url_fgrep not in url:
             LOGGER.debug('skipping due to --url-fgrep: %s', url)
             continue
