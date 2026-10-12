@@ -213,6 +213,13 @@ file, `--creator`, `--operator`, `--is-part-of` and `--description` to fill
 in the `warcinfo` record, and `--add-metadata-record FILE` to add a file
 (e.g. the URL list of the job) as a metadata record to each WARC file.
 
+A capture that cannot be fetched (after retries) does not stop the job: the
+other captures are still written, and at the end `cdxt repackage` logs how
+many captures were requested, written and failed, and exits with status 1.
+A failure to write the output stops the job at once; the WARC file being
+written is removed (or its S3 upload aborted), the files before it are
+complete.
+
 ### Migrating from the old commands
 
 `cdxt iter` is a deprecated alias of `cdxt index` with the same (new)

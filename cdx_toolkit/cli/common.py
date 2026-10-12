@@ -6,6 +6,11 @@ import re
 
 LOGGER = logging.getLogger(__name__)
 
+
+class IncompleteError(RuntimeError):
+    """The command ran, but did not do all of its work, e.g. captures could not be fetched (exit status 1)."""
+
+
 SIZE_UNITS = {
     '': 1,
     'b': 1,

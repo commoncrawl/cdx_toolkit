@@ -35,6 +35,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
 
 from cdx_toolkit.aws import configure_fsspec_s3
+from cdx_toolkit.repackage.data_classes import RepackageResult
 from cdx_toolkit.repackage.sources.csv import CsvSource, RangeJobCsvWriter
 from cdx_toolkit.repackage.warc_filter import WARCFilter
 from cdx_toolkit.repackage.warc_utils import generate_warc_filename
@@ -72,7 +73,7 @@ def _next_file_sequence(_current: int) -> int:
         return _FILE_SEQUENCE.value
 
 
-def _run_worker(cfg: Dict) -> int:
+def _run_worker(cfg: Dict) -> RepackageResult:
     """Worker entrypoint (runs in a child process): fetch one shard into the output WARCs."""
     if cfg.get('uvloop'):
         os.environ['CDXT_UVLOOP'] = '1'
@@ -133,9 +134,9 @@ def run_multiprocess_repackage(
     uvloop: bool,
     max_file_size: Optional[int] = 1_000_000_000,
     warc_download_prefix: Optional[str] = None,
-) -> int:
+) -> RepackageResult:
     """Shard -> N worker processes (rotating at --size) writing one global
-    <prefix>[-<subprefix>]-NNN.warc.gz series. Returns the record count."""
+    <prefix>[-<subprefix>]-NNN.warc.gz series."""
     tmp_dir = tempfile.mkdtemp(prefix='cdxt_shards_')
     start = time.time()
     try:
@@ -176,7 +177,8 @@ def run_multiprocess_repackage(
             max_workers=len(configs), mp_context=mp_context, initializer=_init_worker, initargs=(file_sequence,)
         ) as ex:
             results = list(ex.map(_run_worker, configs))
-        total = sum(r for r in results if r and r > 0)
+        result = sum(results, RepackageResult())
+        total = result.written
         n_files = file_sequence.value
         fetch_elapsed = time.time() - start
         logger.info('All %d workers done: %d records in %d files in %.1fs (%.0f rec/s)',
@@ -188,7 +190,7 @@ def run_multiprocess_repackage(
         logger.info('Repackage complete -> %d files %s (%.1fs total)',
                     n_files, _output_filename(prefix_path, sequence=1, subprefix=writer_subprefix),
                     time.time() - start)
-        return total
+        return result
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

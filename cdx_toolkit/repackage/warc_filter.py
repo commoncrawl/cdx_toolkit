@@ -13,7 +13,7 @@ from cdx_toolkit.repackage.s3_utils import (
     is_s3_url,
 )
 from cdx_toolkit.repackage.hf_utils import is_hf_url, make_hf_reader
-from cdx_toolkit.repackage.data_classes import RangeJob, RangePayload, ThroughputTracker
+from cdx_toolkit.repackage.data_classes import RangeJob, RangePayload, RepackageResult, ThroughputTracker
 from cdx_toolkit.repackage.warc_utils import create_new_writer_with_header
 from cdx_toolkit.repackage.sources.base import RangeJobSource
 from cdx_toolkit.repackage.warc_utils import get_bytes_from_warc_record, get_metadata_record_from_path
@@ -118,11 +118,11 @@ class WARCFilter:
         # multi-process mode shares one counter across processes, so file names are final right away.
         self.next_file_sequence = next_file_sequence or (lambda sequence: sequence + 1)
 
-    def filter(self) -> int:
+    def filter(self) -> RepackageResult:
         """Perform the filtering process (calls async method via asyncio.run).
 
-        Returns:
-            int: Number of records written, or -1 if interrupted.
+        Captures that cannot be fetched are counted as failed (the others are still written); a failure to
+        write raises.
         """
         runner = asyncio.run
         if os.environ.get('CDXT_UVLOOP') == '1':
@@ -133,12 +133,7 @@ class WARCFilter:
                 logger.info('Using uvloop event loop')
             except ImportError:
                 logger.warning('CDXT_UVLOOP=1 but uvloop is not installed; using default asyncio loop')
-        try:
-            return runner(self.filter_async())
-        except KeyboardInterrupt:
-            logger.warning('Interrupted by user.')
-
-        return -1
+        return runner(self.filter_async())
 
     def needs_aws(self) -> bool:
         """Returns true if the read/write (stage 2/3) S3 clients are needed.
@@ -184,12 +179,8 @@ class WARCFilter:
         else:
             return None
 
-    async def filter_async(self) -> int:
-        """Filter process using a three stage approach (job generator, warc reader, warc writer).
-
-        Returns:
-            int: Number of records written.
-        """
+    async def filter_async(self) -> RepackageResult:
+        """Filter process using a three stage approach (job generator, warc reader, warc writer)."""
         range_jobs_queue: asyncio.Queue = asyncio.Queue(maxsize=self.range_jobs_queue_size)
         warc_records_queue: asyncio.Queue = asyncio.Queue(maxsize=self.warc_records_queue_size)
 
@@ -254,7 +245,7 @@ class WARCFilter:
         read_s3_client=None,
         write_s3_client=None,
         hf_reader=None,
-    ) -> int:
+    ) -> RepackageResult:
         """Run the actual filter pipeline with or without S3 client.
 
         A failing writer (or source) stops the whole pipeline, as does cancellation: all tasks are cancelled,
@@ -266,9 +257,6 @@ class WARCFilter:
             read_s3_client: Optional S3 client for reads from S3.
             write_s3_client: Optional S3 client for writes S3.
             hf_reader: Optional HF reader for hf:// downloads.
-
-        Returns:
-            int: Number of records written.
         """
         logger.info('Starting job generator, %d WARC readers, 1 WARC writer', self.num_readers)
         stop = threading.Event()
@@ -300,12 +288,12 @@ class WARCFilter:
 
         async def feed():
             """Wait for the jobs to be produced and read, then stop the readers and the writer."""
-            await producer
+            requested = await producer
             for _ in warc_readers:
                 await range_jobs_queue.put(_STOP)
             results = await asyncio.gather(*warc_readers)
             await warc_records_queue.put(_STOP)
-            return results
+            return requested, results
 
         feeder = asyncio.create_task(feed())
         tasks = [producer, *warc_readers, warc_writer, feeder]
@@ -313,7 +301,7 @@ class WARCFilter:
             done, _ = await asyncio.wait({feeder, warc_writer}, return_when=asyncio.FIRST_EXCEPTION)
             for task in done:
                 task.result()  # raises the exception of a failed task
-            readers_results = await feeder
+            requested, readers_results = await feeder
             writer_result = await warc_writer
         except BaseException:
             stop.set()
@@ -340,7 +328,10 @@ class WARCFilter:
             f"{writer_stats['records_per_sec']:.2f} rec/s"
         )
 
-        return writer_stats['total_records']
+        failed = sum(result['failed'] for result in readers_results)
+        if failed:
+            logger.error('%d of %d captures could not be fetched', failed, requested)
+        return RepackageResult(requested=requested, written=writer_stats['total_records'], failed=failed)
 
     async def read_warc_records(
         self,
@@ -365,6 +356,7 @@ class WARCFilter:
         tracker = ThroughputTracker()
         tracker.start()
         counter = 0
+        failed = 0
 
         while True:
             job = await range_jobs_queue.get()
@@ -395,17 +387,12 @@ class WARCFilter:
                 self.log_reader(reader_id=reader_id, counter=counter, tracker=tracker)
 
                 await warc_records_queue.put(RangePayload(job=job, data=data))
-            except Exception:
-                logger.exception(
-                    'WARC Reader %d failed on %s/%s [%d,%d]',
-                    reader_id,
-                    getattr(job, 'bucket', '?'),
-                    getattr(job, 'key', '?'),
-                    getattr(job, 'offset', -1),
-                    getattr(job, 'length', -1),
-                )
+            except Exception as e:
+                # the capture is lost, the others are still fetched; the run fails at the end
+                failed += 1
+                logger.error('WARC Reader %d failed on %s [%d,%d]: %r', reader_id, job.url, job.offset, job.length, e)
 
-        return {'reader_id': reader_id, 'stats': tracker.get_stats()}
+        return {'reader_id': reader_id, 'stats': tracker.get_stats(), 'failed': failed}
 
     async def write_metadata_records(self, writer, warcinfo_id: str) -> int:
         """Write WARC metadata records based on paths"""

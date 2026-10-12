@@ -14,7 +14,7 @@ from warcio import WARCWriter
 from warcio.archiveiterator import ArchiveIterator
 
 from cdx_toolkit.repackage import multiprocess
-from cdx_toolkit.repackage.data_classes import RangeJob
+from cdx_toolkit.repackage.data_classes import RangeJob, RepackageResult
 from cdx_toolkit.repackage.local_writer import LocalFileWriter
 from cdx_toolkit.repackage.sources.records import RecordsSource
 from cdx_toolkit.repackage.warc_filter import WARCFilter
@@ -44,7 +44,7 @@ def response_records(paths):
     return records
 
 
-def test_reader_and_writer_errors_are_logged_and_skipped(tmp_path, caplog):
+def test_failed_captures_are_counted_and_the_others_written(tmp_path):
     calls = []
 
     def flaky_get(url, headers=None, **kwargs):
@@ -56,9 +56,7 @@ def test_reader_and_writer_errors_are_logged_and_skipped(tmp_path, caplog):
     wf = WARCFilter(source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'),
                     writer_info={})
     with patch('cdx_toolkit.repackage.data_classes.myrequests_get', side_effect=flaky_get):
-        assert wf.filter() == 3
-
-    assert 'WARC Reader 0 failed' in caplog.text
+        assert wf.filter() == RepackageResult(requested=4, written=3, failed=1)
     assert len(response_records(glob.glob(str(tmp_path / 'out-*.warc.gz')))) == 3
 
 
@@ -86,7 +84,7 @@ def test_rotation_by_size(tmp_path):
     wf = WARCFilter(source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'),
                     writer_info={}, max_file_size=1)
     with patch('cdx_toolkit.repackage.data_classes.myrequests_get', side_effect=fake_get):
-        assert wf.filter() == 4
+        assert wf.filter().written == 4
     paths = sorted(glob.glob(str(tmp_path / 'out-*.warc.gz')))
     assert [os.path.basename(p) for p in paths] == [f'out-00{i}.warc.gz' for i in range(1, 5)]
     assert all(len(response_records([p])) == 1 for p in paths)
@@ -149,7 +147,7 @@ def test_hf_reads_use_the_hf_reader(tmp_path):
                     prefix_path=str(tmp_path / 'out'), writer_info={},
                     warc_download_prefix='hf://buckets/commoncrawl/commoncrawl')
     with patch('cdx_toolkit.repackage.warc_filter.make_hf_reader', fake_make_hf_reader):
-        assert wf.filter() == 4
+        assert wf.filter().written == 4
     records = response_records(glob.glob(str(tmp_path / 'out-*.warc.gz')))
     assert records[0].rec_headers.get_header('WARC-Target-URI').startswith('hf://buckets/commoncrawl/commoncrawl/')
 
@@ -162,7 +160,7 @@ def test_uvloop(monkeypatch, caplog, uvloop_installed):
     wf = WARCFilter(source=RecordsSource([], None), prefix_path='/nonexistent/out', writer_info={})
 
     with caplog.at_level('INFO'):
-        assert wf.filter() == 0
+        assert wf.filter() == RepackageResult()
     assert ('Using uvloop event loop' if uvloop_installed else 'uvloop is not installed') in caplog.text
 
 
@@ -200,7 +198,7 @@ def test_multiprocess_repackage(tmp_path, remote):
             uvloop=False, max_file_size=1,
         )
 
-    assert n == 4
+    assert n == RepackageResult(requested=4, written=4)
     fs = fsspec.filesystem('memory')
     if remote:
         paths = ['memory://' + p for p in fs.glob('/mp-test/out/RUN-SUB-*.warc.gz')]

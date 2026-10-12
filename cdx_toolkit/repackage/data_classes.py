@@ -41,6 +41,20 @@ class ThroughputTracker:
 
 
 @dataclass(frozen=True)
+class RepackageResult:
+    """Number of captures to repackage, written to WARC files, and failed (not fetched)."""
+
+    requested: int = 0
+    written: int = 0
+    failed: int = 0
+
+    def __add__(self, other: 'RepackageResult') -> 'RepackageResult':
+        return RepackageResult(
+            self.requested + other.requested, self.written + other.written, self.failed + other.failed
+        )
+
+
+@dataclass(frozen=True)
 class RangeJob:
     """Defines a S3 or HTTP range read request."""
 

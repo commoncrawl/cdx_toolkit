@@ -6,7 +6,7 @@ from cdx_toolkit.indexes import UsageError
 from cdx_toolkit.utils import get_version
 
 from . import index, repackage
-from .common import add_verbose_arg, set_loglevel
+from .common import IncompleteError, add_verbose_arg, set_loglevel
 from .deprecated import DEPRECATED_COMMANDS, REMOVED_COMMANDS, exit_removed_command, get_command
 from .deprecated import rewrite_deprecated_command
 
@@ -42,3 +42,7 @@ def main(args=None):
         cmd.func(cmd, cmdline)
     except (UsageError, FileNotFoundError) as e:
         parser.exit(2, f'cdxt {cmd.cmd}: error: {e}\n')
+    except IncompleteError as e:
+        parser.exit(1, f'cdxt {cmd.cmd}: error: {e}\n')
+    except KeyboardInterrupt:
+        parser.exit(130, f'cdxt {cmd.cmd}: interrupted\n')

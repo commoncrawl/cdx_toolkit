@@ -12,6 +12,7 @@ import cdx_toolkit.warc
 from cdx_toolkit.cli import main
 from cdx_toolkit.cli.common import parse_size
 from cdx_toolkit.cli.deprecated import get_command, rewrite_deprecated_command, translate
+from cdx_toolkit.repackage.data_classes import RepackageResult
 import cdx_toolkit.cli.index
 
 
@@ -123,6 +124,7 @@ def test_repackage_options_are_passed_to_the_warc_fetcher(tmp_path):
     captures = _write_captures(tmp_path / 'captures.jsonl', [])
 
     with patch('cdx_toolkit.repackage.warc_filter.WARCFilter') as warc_filter:
+        warc_filter.return_value.filter.return_value = RepackageResult()
         main([
             'repackage', captures, '--prefix', 'FOO', '--subprefix', 'BAR', '--size', '1MiB',
             '--creator', 'me', '--description', 'test', '--add-metadata-record', 'a.txt',
@@ -145,7 +147,8 @@ def test_repackage_options_are_passed_to_the_warc_fetcher(tmp_path):
 def test_repackage_with_processes_uses_multiprocess(tmp_path):
     captures = _write_captures(tmp_path / 'captures.jsonl', [CC_CAPTURE])
 
-    with patch('cdx_toolkit.repackage.multiprocess.run_multiprocess_repackage', return_value=1) as run:
+    result = RepackageResult(1, 1)
+    with patch('cdx_toolkit.repackage.multiprocess.run_multiprocess_repackage', return_value=result) as run:
         main(['repackage', captures, '--prefix', str(tmp_path / 'out'), '--processes', '3', '--subprefix', 'SUB'])
 
     kwargs = run.call_args.kwargs
@@ -244,3 +247,43 @@ def test_verbose_before_and_after_subcommand(tmp_path):
         assert set_loglevel.call_args.args == (1,)
         main(['repackage', '-vv', captures, '--prefix', str(tmp_path / 'out')])
         assert set_loglevel.call_args.args == (2,)
+
+
+@pytest.mark.parametrize('n_failing', [1, 2])
+def test_repackage_exits_1_if_captures_could_not_be_fetched(tmp_path, capsys, n_failing):
+    captures = [dict(CC_CAPTURE, offset=str(i)) for i in range(2)]
+    path = _write_captures(tmp_path / 'captures.jsonl', captures)
+    calls = []
+
+    def get(url, headers=None, **kwargs):
+        calls.append(url)
+        if len(calls) <= n_failing:
+            raise ConnectionError('network down')
+        return Mock(content=_gzipped_warc_record())
+
+    with patch('cdx_toolkit.repackage.data_classes.myrequests_get', side_effect=get), \
+            pytest.raises(SystemExit) as exc:
+        main(['repackage', path, '--prefix', str(tmp_path / 'out')])
+    assert exc.value.code == 1
+    assert f'{n_failing} of 2 captures could not be fetched' in capsys.readouterr().err
+    assert len(list(tmp_path.glob('out-*.warc.gz'))) == (1 if n_failing == 1 else 0)
+
+
+def test_repackage_fails_if_the_output_cannot_be_created(tmp_path):
+    path = _write_captures(tmp_path / 'captures.jsonl', [CC_CAPTURE])
+    response = Mock(content=_gzipped_warc_record())
+    with patch('cdx_toolkit.repackage.data_classes.myrequests_get', return_value=response), \
+            patch('cdx_toolkit.repackage.local_writer.aiofiles.open', side_effect=PermissionError('read-only')), \
+            pytest.raises(PermissionError):
+        main(['repackage', path, '--prefix', str(tmp_path / 'out')])
+    assert list(tmp_path.glob('out-*')) == []
+
+
+def test_repackage_with_wb_counts_failed_captures(tmp_path, capsys):
+    path = _write_captures(tmp_path / 'captures.jsonl', [IA_CAPTURE, IA_CAPTURE])
+    fetched = [RuntimeError('404'), _make_fake_record()]
+    with patch.object(cdx_toolkit.cli.repackage, 'fetch_wb_warc', side_effect=fetched), \
+            pytest.raises(SystemExit) as exc:
+        main(['repackage', path, '--wb', 'ia', '--prefix', str(tmp_path / 'out')])
+    assert exc.value.code == 1
+    assert '1 of 2 captures could not be fetched' in capsys.readouterr().err

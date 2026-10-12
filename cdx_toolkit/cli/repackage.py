@@ -12,7 +12,7 @@ from cdx_toolkit.record_io import (
 from cdx_toolkit.utils import get_version
 from cdx_toolkit.warc import fetch_wb_warc
 
-from .common import add_verbose_arg, parse_size
+from .common import IncompleteError, add_verbose_arg, parse_size
 
 
 LOGGER = logging.getLogger(__name__)
@@ -153,14 +153,20 @@ def run(args: Namespace, cmdline: str):
     start_time = time.time()
 
     if args.wb:
-        n = repackage_from_wayback(args, records, info)
+        result = repackage_from_wayback(args, records, info)
     else:
-        n = repackage_by_warc_location(args, records, info)
+        result = repackage_by_warc_location(args, records, info)
 
-    LOGGER.info('wrote %d WARC records in %.1f seconds', n, time.time() - start_time)
+    LOGGER.info('wrote %d of %d captures to WARC files (%d failed) in %.1f seconds',
+                result.written, result.requested, result.failed, time.time() - start_time)
+    if result.failed:
+        raise IncompleteError(
+            f'{result.failed} of {result.requested} captures could not be fetched (see the log), '
+            f'{result.written} were written'
+        )
 
 
-def repackage_by_warc_location(args: Namespace, records, info: dict) -> int:
+def repackage_by_warc_location(args: Namespace, records, info: dict):
     """Copy the WARC records byte-for-byte with the async WARC fetcher (optionally multi-process)."""
     import fsspec
 
@@ -210,7 +216,7 @@ def repackage_by_warc_location(args: Namespace, records, info: dict) -> int:
         raise UsageError(str(e))
 
 
-def repackage_from_wayback(args: Namespace, records, info: dict) -> int:
+def repackage_from_wayback(args: Namespace, records, info: dict):
     """Replay the captures from a wayback machine, one by one, and write them with the WARC writer of cdx_toolkit."""
     for option, used in (
         ('--processes', args.processes > 1),
@@ -220,18 +226,21 @@ def repackage_from_wayback(args: Namespace, records, info: dict) -> int:
         if used:
             raise UsageError(f'{option} cannot be used with --wb')
 
+    from cdx_toolkit.repackage.data_classes import RepackageResult
+
     wb = WAYBACK_NAMES.get(args.wb, args.wb)
-    n = 0
+    requested = written = 0
     with cdx_toolkit.warc.get_writer(args.prefix, args.subprefix, info, size=args.size) as writer:
         for capture in records:
+            requested += 1
             try:
                 record = fetch_record(capture, wb)
-            except RuntimeError:  # pragma: no cover
-                LOGGER.warning('skipping capture for RuntimeError 404: %s %s', capture['url'], capture['timestamp'])
+            except Exception as e:
+                LOGGER.error('cannot fetch capture %s %s: %r', capture.get('url'), capture.get('timestamp'), e)
                 continue
             writer.write_record(record)
-            n += 1
-    return n
+            written += 1
+    return RepackageResult(requested=requested, written=written, failed=requested - written)
 
 
 def fetch_record(capture: Mapping, wb: Optional[str]):
