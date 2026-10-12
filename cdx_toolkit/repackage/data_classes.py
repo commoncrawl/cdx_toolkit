@@ -88,10 +88,9 @@ class RangeJob:
         self,
         max_attempts: int,
         base_backoff_seconds: float,
-        s3_client=None,
-        hf_reader=None,
+        readers=None,
     ) -> bytes:
-        """Ranged get request to S3 (aioboto3), an HF bucket, or HTTP."""
+        """Ranged get request to S3 (aioboto3), an HF bucket, or HTTP; `readers` provides the S3 and HF readers."""
         offset = self.offset
         length = self.length
 
@@ -100,6 +99,9 @@ class RangeJob:
         if self.is_s3():
             # read from S3
             bucket, key = self.get_s3_bucket_and_key()
+            if readers is None:
+                raise ValueError('s3:// range read requires readers (none were provided)')
+            s3_client = await readers.s3()
             resp = await with_retries(
                 lambda: s3_client.get_object(Bucket=bucket, Key=key, Range=f'bytes={offset}-{end}'),
                 op_name=f'ranged_get {bucket}/{key}[{offset}:{end}]',
@@ -113,8 +115,9 @@ class RangeJob:
 
         elif self.is_hf():
             # read from a Hugging Face bucket (hf://) via the configured HF reader
-            if hf_reader is None:
-                raise ValueError('hf:// range read requires an hf_reader (none was provided)')
+            if readers is None:
+                raise ValueError('hf:// range read requires readers (none were provided)')
+            hf_reader = await readers.hf()
             return await hf_reader.ranged_get(
                 self.url,
                 offset,

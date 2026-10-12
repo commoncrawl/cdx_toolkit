@@ -142,7 +142,7 @@ def test_repackage_options_are_passed_to_the_warc_fetcher(tmp_path):
     assert kwargs['max_file_size'] == 1024 * 1024
     assert kwargs['write_paths_as_metadata_records'] == ['a.txt']
     assert kwargs['n_parallel_readers'] == 4
-    assert kwargs['warc_download_prefix'] == 's3://commoncrawl'
+    assert [job.url for job in kwargs['source'].iter_range_jobs()] == []
     info = kwargs['writer_info']
     assert info['isPartOf'] == 'FOO-BAR'
     assert info['creator'] == 'me'

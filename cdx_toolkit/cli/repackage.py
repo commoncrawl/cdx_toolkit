@@ -196,7 +196,6 @@ def repackage_by_warc_location(args: Namespace, records, info: dict):
                 max_attempts=5,
                 uvloop=os.environ.get('CDXT_UVLOOP') == '1',
                 max_file_size=args.size,
-                warc_download_prefix=args.warc_download_prefix,
             )
 
         from cdx_toolkit.repackage.warc_filter import WARCFilter
@@ -208,7 +207,6 @@ def repackage_by_warc_location(args: Namespace, records, info: dict):
             writer_subprefix=args.subprefix,
             write_paths_as_metadata_records=args.add_metadata_record,
             log_every_n=args.log_every_n,
-            warc_download_prefix=args.warc_download_prefix,
             n_parallel_readers=args.parallel_readers,
             max_file_size=args.size,
         ).filter()

@@ -124,11 +124,15 @@ def test_parquet_batches_exactly_full(tmp_path, monkeypatch):
 
 def test_hf_range_job_needs_a_reader():
     job = RangeJob(url='hf://buckets/ns/name/x.warc.gz', offset=0, length=1)
-    with pytest.raises(ValueError, match='requires an hf_reader'):
+    with pytest.raises(ValueError, match='requires readers'):
         asyncio.run(job.ranged_get_bytes(1, 0))
 
     class Reader:
         async def ranged_get(self, url, offset, length, **kwargs):
             return b'x'
 
-    assert asyncio.run(job.ranged_get_bytes(1, 0, hf_reader=Reader())) == b'x'
+    class Readers:
+        async def hf(self):
+            return Reader()
+
+    assert asyncio.run(job.ranged_get_bytes(1, 0, readers=Readers())) == b'x'

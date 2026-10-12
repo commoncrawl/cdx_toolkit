@@ -1,5 +1,4 @@
 """Common Crawl's S3 defaults (cdx_toolkit.aws): used for the settings the user did not configure."""
-import asyncio
 from unittest.mock import patch
 
 import pytest
@@ -133,11 +132,8 @@ def test_warc_fetcher_s3_clients(no_user_config):
     from cdx_toolkit.repackage.sources.records import RecordsSource
     from cdx_toolkit.repackage.warc_filter import WARCFilter
 
-    wf = WARCFilter(source=RecordsSource([], None), prefix_path='out', writer_info={},
-                    warc_download_prefix='s3://commoncrawl', n_parallel_readers=4)
-    with patch('aioboto3.Session') as session:
-        asyncio.run(wf.get_aws_clients())
-    read_config, write_config = (c.kwargs['config'] for c in session.return_value.client.call_args_list)
+    wf = WARCFilter(source=RecordsSource([], None), prefix_path='out', writer_info={}, n_parallel_readers=4)
+    read_config, write_config = wf.s3_read_config(), wf.s3_write_config()
     for config in (read_config, write_config):
         assert config.region_name == 'us-east-1'
         assert config.retries == {'mode': 'adaptive', 'total_max_attempts': 100000}

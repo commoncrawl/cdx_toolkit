@@ -150,17 +150,8 @@ def test_cancellation_with_a_full_queue_and_a_blocked_reader(tmp_path):
 
 
 def test_hf_reads_use_the_hf_reader(tmp_path):
-    class FakeHfReader:
-        async def ranged_get(self, url, offset, length, **kwargs):
-            return SERVER.files[url.split('/', 5)[-1]][offset:offset + length]
-
-    @contextlib.asynccontextmanager
-    async def fake_make_hf_reader():
-        yield FakeHfReader()
-
     wf = WARCFilter(source=RecordsSource(CAPTURES, 'hf://buckets/commoncrawl/commoncrawl'),
-                    prefix_path=str(tmp_path / 'out'), writer_info={},
-                    warc_download_prefix='hf://buckets/commoncrawl/commoncrawl')
+                    prefix_path=str(tmp_path / 'out'), writer_info={})
     with patch('cdx_toolkit.repackage.warc_filter.make_hf_reader', fake_make_hf_reader):
         assert wf.filter().written == 4
     records = response_records(glob.glob(str(tmp_path / 'out-*.warc.gz')))
@@ -179,10 +170,71 @@ def test_uvloop(monkeypatch, caplog, uvloop_installed):
     assert ('Using uvloop event loop' if uvloop_installed else 'uvloop is not installed') in caplog.text
 
 
-def test_no_aws_clients_without_s3():
-    wf = WARCFilter(source=RecordsSource([], None), prefix_path='out', writer_info={},
-                    warc_download_prefix='https://data.commoncrawl.org')
-    assert asyncio.run(wf.get_aws_clients()) is None
+class FakeS3Client:
+    """aioboto3 S3 client stand-in that serves the files of SERVER."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get_object(self, Bucket, Key, Range):
+        start, end = (int(n) for n in Range[len('bytes='):].split('-'))
+
+        class Body:
+            async def read(self):
+                return SERVER.files[Key][start:end + 1]
+
+        return {'Body': Body()}
+
+
+class FakeHfReader:
+    async def ranged_get(self, url, offset, length, **kwargs):
+        return SERVER.files[url.split('/', 5)[-1]][offset:offset + length]
+
+
+@contextlib.asynccontextmanager
+async def fake_make_hf_reader():
+    yield FakeHfReader()
+
+
+def mixed_scheme_captures():
+    """The captures with full s3:// and hf:// filenames, and a relative one (default download prefix)."""
+    s3, hf, relative = CAPTURES[0], CAPTURES[1], CAPTURES[2]
+    return [dict(s3, filename='s3://commoncrawl/' + s3['filename']),
+            dict(hf, filename='hf://buckets/commoncrawl/commoncrawl/' + hf['filename']), relative]
+
+
+@pytest.mark.parametrize('processes', [1, 2])
+def test_full_s3_and_hf_filenames_get_their_readers(tmp_path, processes):
+    pytest.importorskip('aioboto3')
+    source = RecordsSource(mixed_scheme_captures(), 'https://data.example.org')
+    with patch('aioboto3.Session') as session, \
+            patch('cdx_toolkit.repackage.warc_filter.make_hf_reader', fake_make_hf_reader), \
+            patch('cdx_toolkit.repackage.data_classes.myrequests_get', side_effect=fake_get), \
+            patch.object(multiprocess, 'ProcessPoolExecutor', InlineExecutor):
+        session.return_value.client.return_value = FakeS3Client()
+        if processes == 1:
+            result = WARCFilter(source=source, prefix_path=str(tmp_path / 'out'), writer_info={}).filter()
+        else:
+            result = multiprocess.run_multiprocess_repackage(
+                source=source, n_processes=processes, readers_per_process=1, prefix_path=str(tmp_path / 'out'),
+                writer_info={}, writer_subprefix=None, write_paths_as_metadata_records=None, log_every_n=0,
+                max_attempts=1, uvloop=False,
+            )
+    assert result == RepackageResult(requested=3, written=3)
+    records = response_records(glob.glob(str(tmp_path / 'out-*.warc.gz')))
+    assert sorted(r.rec_headers.get_header('WARC-Target-URI') for r in records) == \
+        sorted(c['url'] for c in CAPTURES[:3])
+
+
+def test_no_s3_client_without_s3(tmp_path):
+    with patch('aioboto3.Session') as session, \
+            patch('cdx_toolkit.repackage.data_classes.myrequests_get', side_effect=fake_get):
+        WARCFilter(source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'),
+                   writer_info={}).filter()
+    session.assert_not_called()
 
 
 class InlineExecutor:

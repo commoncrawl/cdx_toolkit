@@ -12,7 +12,7 @@ from cdx_toolkit.aws import botocore_config
 from cdx_toolkit.repackage.s3_utils import (
     is_s3_url,
 )
-from cdx_toolkit.repackage.hf_utils import is_hf_url, make_hf_reader
+from cdx_toolkit.repackage.hf_utils import make_hf_reader
 from cdx_toolkit.repackage.data_classes import RangeJob, RangePayload, RepackageResult, ThroughputTracker
 from cdx_toolkit.repackage.warc_utils import create_new_writer_with_header
 from cdx_toolkit.repackage.sources.base import RangeJobSource
@@ -22,6 +22,33 @@ from cdx_toolkit.repackage.warc_utils import get_bytes_from_warc_record, get_met
 _STOP = object()
 
 logger = logging.getLogger(__name__)
+
+
+class Readers:
+    """The readers of WARC ranges, by the URL scheme of a range job, each created when it is first needed:
+    an S3 client for s3:// and the HF reader for hf:// (http(s):// needs none). They are closed with `stack`."""
+
+    def __init__(self, stack: contextlib.AsyncExitStack, s3_config_factory: Callable):
+        self.stack = stack
+        self.s3_config_factory = s3_config_factory
+        self._s3 = None
+        self._hf = None
+        self._lock = asyncio.Lock()
+
+    async def s3(self):
+        async with self._lock:
+            if self._s3 is None:
+                import aioboto3
+
+                client = aioboto3.Session().client('s3', config=self.s3_config_factory())
+                self._s3 = await self.stack.enter_async_context(client)
+            return self._s3
+
+    async def hf(self):
+        async with self._lock:
+            if self._hf is None:
+                self._hf = await self.stack.enter_async_context(make_hf_reader())
+            return self._hf
 
 
 class WARCFilter:
@@ -49,7 +76,6 @@ class WARCFilter:
         writer_subprefix: Optional[str] = None,
         write_paths_as_metadata_records: Optional[List[str]] = None,
         log_every_n: int = 1000,
-        warc_download_prefix: Optional[str] = None,
         n_parallel_readers: int = 1,
         max_attempts: int = 5,
         base_backoff_seconds: float = 0.5,
@@ -72,7 +98,6 @@ class WARCFilter:
             writer_subprefix: Optional subprefix for writer output paths.
             write_paths_as_metadata_records: Optional list of file paths to write as metadata records.
             log_every_n: Log progress every N records.
-            warc_download_prefix: Optional prefix to prepend to WARC URLs.
             n_parallel_readers: Number of async readers per process (one writer per process).
             max_attempts: Maximum retry attempts for failed operations.
             base_backoff_seconds: Base backoff time in seconds for retries.
@@ -93,7 +118,6 @@ class WARCFilter:
         self.writer_subprefix = writer_subprefix
         self.write_paths_as_metadata_records = write_paths_as_metadata_records
         self.log_every_n = log_every_n
-        self.warc_download_prefix = warc_download_prefix
 
         # self.writer_kwargs = writer_kwargs
         self.range_jobs_queue_size = range_jobs_queue_size
@@ -135,76 +159,44 @@ class WARCFilter:
                 logger.warning('CDXT_UVLOOP=1 but uvloop is not installed; using default asyncio loop')
         return runner(self.filter_async())
 
-    def needs_aws(self) -> bool:
-        """Returns true if the read/write (stage 2/3) S3 clients are needed.
+    def s3_read_config(self):
+        """botocore config of the S3 client for range reads: high throughput."""
+        # region, retries and S3 settings: Common Crawl's recommended defaults, unless the
+        # user configured them (see cdx_toolkit.aws); an explicit aws_region_name wins
+        return botocore_config(
+            region_name=self.aws_region_name,
+            max_pool_connections=self.num_readers * 3,
+            read_timeout=300,
+            tcp_keepalive=True,
+        )
 
-        Sources own their own stage-1 resource (Athena client / DuckDB connection /
-        fsspec), so this only concerns WARC reads and output writes.
-        """
-        return is_s3_url(self.warc_download_prefix) or is_s3_url(self.prefix_path)
-
-    async def get_aws_clients(self) -> Optional[Dict]:
-        """Return async S3 clients for WARC reads/writes if needed.
-
-        Stage-1 clients/connections are owned by the source, so this only builds the
-        read/write S3 clients used to fetch WARC ranges and write output.
-        """
-        if self.needs_aws():
-            import aioboto3
-
-            session = aioboto3.Session()
-
-            # region, retries and S3 settings: Common Crawl's recommended defaults, unless the
-            # user configured them (see cdx_toolkit.aws); an explicit aws_region_name wins
-            # High-throughput config for range reads
-            read_config = botocore_config(
-                region_name=self.aws_region_name,
-                max_pool_connections=self.num_readers * 3,
-                read_timeout=300,
-                tcp_keepalive=True,
-            )
-
-            # Optimized config for multipart uploads (single writer)
-            write_config = botocore_config(
-                region_name=self.aws_region_name,
-                max_pool_connections=8,
-                read_timeout=120,
-                connect_timeout=10,
-            )
-
-            return {
-                'read': session.client('s3', config=read_config),
-                'write': session.client('s3', config=write_config),
-            }
-        else:
-            return None
+    def s3_write_config(self):
+        """botocore config of the S3 client for multipart uploads (single writer)."""
+        return botocore_config(
+            region_name=self.aws_region_name,
+            max_pool_connections=8,
+            read_timeout=120,
+            connect_timeout=10,
+        )
 
     async def filter_async(self) -> RepackageResult:
         """Filter process using a three stage approach (job generator, warc reader, warc writer)."""
         range_jobs_queue: asyncio.Queue = asyncio.Queue(maxsize=self.range_jobs_queue_size)
         warc_records_queue: asyncio.Queue = asyncio.Queue(maxsize=self.warc_records_queue_size)
 
-        read_is_hf = is_hf_url(self.warc_download_prefix)
-
         async with contextlib.AsyncExitStack() as stack:
-            read_s3_client = write_s3_client = None
-            # S3 read and/or write clients (built together when either side is S3).
-            if self.needs_aws():
-                clients = await self.get_aws_clients()
-                read_s3_client = await stack.enter_async_context(clients['read'])
-                write_s3_client = await stack.enter_async_context(clients['write'])
+            write_s3_client = None
+            if is_s3_url(self.prefix_path):
+                import aioboto3
 
-            # HF reader for hf:// downloads (CDN ranged GETs, one resolve per WARC file).
-            hf_reader = None
-            if read_is_hf:
-                hf_reader = await stack.enter_async_context(make_hf_reader())
+                client = aioboto3.Session().client('s3', config=self.s3_write_config())
+                write_s3_client = await stack.enter_async_context(client)
 
             return await self._run_filter_pipeline(
                 range_jobs_queue=range_jobs_queue,
                 warc_records_queue=warc_records_queue,
-                read_s3_client=read_s3_client,
+                readers=Readers(stack, self.s3_read_config),
                 write_s3_client=write_s3_client,
-                hf_reader=hf_reader,
             )
 
     async def _produce_range_jobs(self, range_jobs_queue: asyncio.Queue, stop: threading.Event) -> int:
@@ -242,9 +234,8 @@ class WARCFilter:
         self,
         range_jobs_queue: asyncio.Queue,
         warc_records_queue: asyncio.Queue,
-        read_s3_client=None,
+        readers: Readers,
         write_s3_client=None,
-        hf_reader=None,
     ) -> RepackageResult:
         """Run the actual filter pipeline with or without S3 client.
 
@@ -254,9 +245,8 @@ class WARCFilter:
         Args:
             range_jobs_queue: Queue for range jobs from the source.
             warc_records_queue: Queue for WARC record payloads.
-            read_s3_client: Optional S3 client for reads from S3.
+            readers: The readers of WARC ranges (by URL scheme).
             write_s3_client: Optional S3 client for writes S3.
-            hf_reader: Optional HF reader for hf:// downloads.
         """
         logger.info('Starting job generator, %d WARC readers, 1 WARC writer', self.num_readers)
         stop = threading.Event()
@@ -271,8 +261,7 @@ class WARCFilter:
                     reader_id=i,
                     range_jobs_queue=range_jobs_queue,
                     warc_records_queue=warc_records_queue,
-                    s3_client=read_s3_client,
-                    hf_reader=hf_reader,
+                    readers=readers,
                 )
             )
             for i in range(self.num_readers)
@@ -338,8 +327,7 @@ class WARCFilter:
         reader_id: int,
         range_jobs_queue: asyncio.Queue,
         warc_records_queue: asyncio.Queue,
-        s3_client=None,
-        hf_reader=None,
+        readers: Readers,
     ) -> dict:
         """Read WARC records based on range jobs -> enqueue RangePayload.
 
@@ -347,8 +335,7 @@ class WARCFilter:
             reader_id: Unique identifier for this reader task.
             range_jobs_queue: Queue to read RangeJob objects from.
             warc_records_queue: Queue to put RangePayload objects into.
-            s3_client: Optional S3 client for reading WARC files from S3.
-            hf_reader: Optional HF reader for reading WARC ranges from hf:// buckets.
+            readers: The readers of WARC ranges (by URL scheme).
 
         Returns:
             dict: Statistics dictionary with reader_id and throughput stats.
@@ -377,8 +364,7 @@ class WARCFilter:
                 data = await job.ranged_get_bytes(
                     self.max_attempts,
                     self.base_backoff_seconds,
-                    s3_client=s3_client,
-                    hf_reader=hf_reader,
+                    readers=readers,
                 )
                 tracker.add(bytes_count=len(data), records_count=job.records_count)
                 counter += 1

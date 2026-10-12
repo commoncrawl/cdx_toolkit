@@ -85,9 +85,6 @@ def _run_worker(cfg: Dict) -> RepackageResult:
         writer_subprefix=cfg['subprefix'],
         write_paths_as_metadata_records=cfg['write_paths_as_metadata_records'],
         log_every_n=cfg['log_every_n'],
-        # Shard CSVs hold full URLs (warc_filename), so CsvSource ignores this; it is
-        # still needed so WARCFilter knows the read scheme (S3 vs hf://).
-        warc_download_prefix=cfg['warc_download_prefix'],
         n_parallel_readers=cfg['readers'],
         aws_region_name=cfg['aws_region_name'],
         max_attempts=cfg['max_attempts'],
@@ -133,7 +130,6 @@ def run_multiprocess_repackage(
     max_attempts: int,
     uvloop: bool,
     max_file_size: Optional[int] = 1_000_000_000,
-    warc_download_prefix: Optional[str] = None,
 ) -> RepackageResult:
     """Shard -> N worker processes (rotating at --size) writing one global
     <prefix>[-<subprefix>]-NNN.warc.gz series."""
@@ -165,7 +161,6 @@ def run_multiprocess_repackage(
                 max_attempts=max_attempts,
                 max_file_size=max_file_size,
                 uvloop=uvloop,
-                warc_download_prefix=warc_download_prefix,
             )
             for shard_csv in shard_csvs
         ]
