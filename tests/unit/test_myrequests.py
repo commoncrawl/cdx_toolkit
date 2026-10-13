@@ -33,15 +33,24 @@ def test_get_with_connection_error(caplog):
 def test_concurrent_requests_keep_the_minimum_interval():
     import threading
 
-    from cdx_toolkit import myrequests
+    from cdx_toolkit.myrequests import HostRateLimiter
 
     host = 'interval-test.example.org'
-    myrequests.retry_info[host] = {'next_fetch': 1.0, 'minimum_interval': 0.5}
+    limiter = HostRateLimiter(3.0, {host: 0.5})
     times = []
-    threads = [threading.Thread(target=lambda: times.append(myrequests.reserve_fetch_time(host, 1000.0)))
-               for _ in range(4)]
+    threads = [threading.Thread(target=lambda: times.append(limiter.reserve(host, 1000.0))) for _ in range(4)]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join()
     assert sorted(times) == [1000.0, 1000.5, 1001.0, 1001.5]
+    assert limiter.minimum_interval('other.example.org') == 3.0
+
+
+def test_finish_spaces_the_next_request_from_the_end_of_the_previous_one():
+    from cdx_toolkit.myrequests import HostRateLimiter
+
+    limiter = HostRateLimiter(10.0, {})
+    with patch('cdx_toolkit.myrequests.time.time', return_value=2000.0):
+        limiter.finish('example.org')
+    assert limiter.reserve('example.org', 2001.0) == 2010.0

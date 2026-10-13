@@ -221,7 +221,7 @@ def cancel_http_read_after_the_first_request(job, request_started):
 
 def test_cancelled_http_read_does_not_wait_for_the_request(monkeypatch):
     """asyncio.run() returns while the (uninterruptible) request is still blocked."""
-    monkeypatch.setitem(myrequests.retry_info, 'blocked.example.org', {'next_fetch': 0, 'minimum_interval': 0})
+    monkeypatch.setitem(myrequests.RATE_LIMITER.intervals, 'blocked.example.org', 0)
     started, release = threading.Event(), threading.Event()
 
     def blocking_get(*args, **kwargs):
@@ -240,7 +240,7 @@ def test_cancelled_http_read_does_not_wait_for_the_request(monkeypatch):
 
 def test_cancelled_http_read_stops_retrying(monkeypatch):
     """The thread does not keep retrying (here: waiting 60s after a connection error) after the cancellation."""
-    monkeypatch.setitem(myrequests.retry_info, 'down.example.org', {'next_fetch': 0, 'minimum_interval': 0})
+    monkeypatch.setitem(myrequests.RATE_LIMITER.intervals, 'down.example.org', 0)
     started, finished = threading.Event(), threading.Event()
     requests_made = []
 

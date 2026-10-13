@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Dict, Optional
 import requests
 import logging
 import threading
@@ -30,52 +30,40 @@ def dns_fatal(hostname):
         return True
 
 
-retry_info = {
-    'default': {
-        'next_fetch': 0,
-        'minimum_interval': DEFAULT_MIN_RETRY_INTERVAL,
-    },
-    'index.commoncrawl.org': {
-        'next_fetch': 0,
-        'minimum_interval': CC_INDEX_MIN_RETRY_INTERVAL,
-    },
-    'data.commoncrawl.org': {
-        'next_fetch': 0,
-        'minimum_interval': CC_DATA_MIN_RETRY_INTERVAL,
-    },
-    'web.archive.org': {
-        'next_fetch': 0,
-        'minimum_interval': IA_MIN_RETRY_INTERVAL,
-    },
-}
+class HostRateLimiter:
+    """The minimum interval between the starts of requests to the same host, also when requests are made from
+    several threads (e.g. the parallel WARC readers of cdxt repackage)."""
+
+    def __init__(self, default_interval: float, intervals: Dict[str, float]):
+        self.default_interval = default_interval
+        self.intervals = dict(intervals)  # seconds, by hostname
+        self._next_fetch: Dict[str, float] = {}  # the earliest start of the next request, by hostname
+        self._lock = threading.Lock()
+
+    def minimum_interval(self, hostname: str) -> float:
+        return self.intervals.get(hostname, self.default_interval)
+
+    def reserve(self, hostname: str, now: float) -> float:
+        """The time at which the next request to `hostname` may start, at least the minimum interval after the
+        previous one; the time is reserved, so concurrent requests are spaced out too."""
+        with self._lock:
+            fetch_time = max(now, self._next_fetch.get(hostname, now))
+            self._next_fetch[hostname] = fetch_time + self.minimum_interval(hostname)
+        return fetch_time
+
+    def finish(self, hostname: str) -> None:
+        """After a request (which may have taken long, with retries): the next one may start the minimum interval
+        from now, or later if that time is reserved already."""
+        with self._lock:
+            next_fetch = time.time() + self.minimum_interval(hostname)
+            self._next_fetch[hostname] = max(self._next_fetch.get(hostname, 0), next_fetch)
 
 
-def get_retries(hostname):
-    if hostname not in retry_info:
-        retry_info[hostname] = retry_info['default'].copy()
-        LOGGER.debug('initializing retry info for new host ' + hostname)
-    entry = retry_info[hostname]
-    if not entry['next_fetch']:
-        entry['next_fetch'] = time.time()
-    return entry['next_fetch'], entry['minimum_interval']
-
-
-def update_next_fetch(hostname, next_fetch):
-    retry_info[hostname]['next_fetch'] = next_fetch
-
-
-# requests may be made from several threads (e.g. the parallel WARC readers of cdxt repackage)
-_retry_lock = threading.Lock()
-
-
-def reserve_fetch_time(hostname: str, now: float) -> float:
-    """The time at which the next request to `hostname` may start, at least the host's minimum interval
-    after the previous one; the time is reserved, so concurrent requests are spaced out too."""
-    with _retry_lock:
-        next_fetch, minimum_interval = get_retries(hostname)
-        fetch_time = max(now, next_fetch)
-        update_next_fetch(hostname, fetch_time + minimum_interval)
-    return fetch_time
+RATE_LIMITER = HostRateLimiter(DEFAULT_MIN_RETRY_INTERVAL, {
+    'index.commoncrawl.org': CC_INDEX_MIN_RETRY_INTERVAL,
+    'data.commoncrawl.org': CC_DATA_MIN_RETRY_INTERVAL,
+    'web.archive.org': IA_MIN_RETRY_INTERVAL,
+})
 
 
 class RequestCancelled(Exception):
@@ -88,14 +76,6 @@ def _sleep(seconds: float, stop: Optional[threading.Event]) -> None:
         time.sleep(seconds)
     elif stop.wait(seconds):
         raise RequestCancelled()
-
-
-def finish_fetch(hostname: str) -> None:
-    """After a request: the next one may start the minimum interval from now (or later, if reserved)."""
-    with _retry_lock:
-        get_retries(hostname)
-        entry = retry_info[hostname]
-        entry['next_fetch'] = max(entry['next_fetch'], time.time() + entry['minimum_interval'])
 
 
 def myrequests_get(
@@ -113,8 +93,6 @@ def myrequests_get(
 
     With `stop`, the waits (before the request, between retries) end with RequestCancelled once it is set; a
     request in progress ends with its timeout."""
-    t = time.time()
-
     if raise_error_after_n_errors is None:
         raise_error_after_n_errors = MAX_ERRORS
 
@@ -122,14 +100,8 @@ def myrequests_get(
         raise_warning_after_n_errors = WARNING_AFTER_N_ERRORS
 
     hostname = urlparse(url).hostname
-    fetch_time = reserve_fetch_time(hostname, t)  # next_fetch is also updated at the bottom
-    minimum_interval = retry_info[hostname]['minimum_interval']
-
-    if t < fetch_time:
-        dt = fetch_time - t
-        if dt > 3.1:
-            LOGGER.debug('sleeping for {:.3f}s before next fetch'.format(dt))
-        _sleep(dt, stop)
+    _wait_for_turn(hostname, stop)
+    minimum_interval = RATE_LIMITER.minimum_interval(hostname)
 
     if params:
         if 'from_ts' in params:
@@ -212,11 +184,17 @@ def myrequests_get(
             LOGGER.warning('something unexpected happened, giving up after %s', str(e))
             raise
 
-    hostname = urlparse(url).hostname
-    if hostname not in previously_seen_hostnames:
-        previously_seen_hostnames.add(hostname)
-
-    # in case we had a lot of retries, etc
-    finish_fetch(hostname)
+    previously_seen_hostnames.add(hostname)
+    RATE_LIMITER.finish(hostname)  # in case we had a lot of retries, etc
 
     return resp
+
+
+def _wait_for_turn(hostname: str, stop: Optional[threading.Event]) -> None:
+    """Wait until a request to `hostname` may start (see HostRateLimiter)."""
+    now = time.time()
+    dt = RATE_LIMITER.reserve(hostname, now) - now
+    if dt > 0:
+        if dt > 3.1:
+            LOGGER.debug('sleeping for {:.3f}s before next fetch'.format(dt))
+        _sleep(dt, stop)
