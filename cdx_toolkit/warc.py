@@ -3,6 +3,7 @@ from io import BytesIO
 import datetime
 import logging
 import os
+import warnings
 
 try:
     import fsspec
@@ -199,11 +200,17 @@ def fetch_warc_record(capture, warc_download_prefix):
 
 
 class CDXToolkitWARCWriter:
-    """Writer for WARC files.
+    """Writer for WARC files (deprecated: use cdx_toolkit.repackage.repackage()).
 
     The fsspec package is used for writting to local or remote file system, e.g., S3."""
 
     def __init__(self, prefix, subprefix, info, size=1000000000, gzip=True, warc_version=None):
+        warnings.warn(
+            'cdx_toolkit.warc.get_writer() and CDXToolkitWARCWriter are deprecated and will be removed in '
+            'cdx_toolkit 1.0; use cdx_toolkit.repackage.repackage()',
+            FutureWarning,
+            stacklevel=2,
+        )
         self.prefix = prefix
         self.subprefix = subprefix
         self.info = info

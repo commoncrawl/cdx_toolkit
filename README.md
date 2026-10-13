@@ -304,7 +304,34 @@ for full details. Add -v (or -vv) to see what's going on under the hood.
 ## Python programming example
 
 Everything that you can do on the command line, and much more, can
-be done by writing a Python program.
+be done by writing a Python program. `cdxt index` and `cdxt repackage`
+run the same code as `open_index()` with an `IndexQuery`, and `repackage()`:
+
+```
+from cdx_toolkit.indexes import IndexQuery, open_index
+from cdx_toolkit.repackage import repackage
+
+index = open_index('cc')  # any INDEX of `cdxt index`, e.g. 'cc-url-index-s3' or 'athena://...'
+query = IndexQuery(urls='commoncrawl.org/*', crawl='CC-MAIN-2024-33', limit=10)
+
+print(index.count(query))    # like --count
+print(index.explain(query))  # like --dry-run
+for capture in index.records(query):
+    print(capture['url'], capture['timestamp'])
+
+result = repackage(index.records(query), prefix='out/COMMONCRAWL', size=100_000_000)
+print(result.written, 'written,', result.failed, 'failed')
+```
+
+The fields of `IndexQuery` are the options of `cdxt index` (`urls`, `hostnames`, `domains`,
+`url_file`, `crawl`, `from_ts`, `to`, `filters`, `languages`, `url_fgrep`, `limit`, `sql`, ...), and the
+arguments of `repackage()` those of `cdxt repackage` (`subprefix`, `size`, `warc_download_prefix`,
+`wb`, `processes`, `parallel_readers`, `metadata_records`, ...). `repackage()` also takes the path of
+an index file. To write the captures to a file like `cdxt index -o`, use
+`cdx_toolkit.record_io.write_records(index.records(query), 'captures.csv', 'csv', fixed_schema=index.fixed_schema)`.
+
+`CDXFetcher` is the lower-level client of the CDX API, which can also
+fetch the content of single captures:
 
 ```
 import cdx_toolkit
@@ -331,8 +358,9 @@ You can also fetch the content of the web capture as bytes:
     print(obj.content)
 ```
 
-There's a full example of iterating and selecting a subset of captures
-to write into an extracted WARC file in [examples/iter-and-warc.py](examples/iter-and-warc.py)
+There's a full example of selecting a subset of captures and writing them
+into a WARC file in [examples/iter-and-warc.py](examples/iter-and-warc.py).
+(`cdx_toolkit.warc.get_writer()` is deprecated: use `repackage()`.)
 
 ## Filter syntax
 

@@ -31,7 +31,8 @@ def test_write_to_local(prefix, gzip, tmpdir):
     full_prefix = str(tmpdir) + '/' + prefix
     fs, fs_prefix_path = fsspec.url_to_fs(full_prefix)
 
-    writer = cdx_toolkit.warc.get_writer(full_prefix, None, info, gzip=gzip)
+    with pytest.warns(FutureWarning, match='deprecated'):
+        writer = cdx_toolkit.warc.get_writer(full_prefix, None, info, gzip=gzip)
 
     # single record
     input_resource_record_text = 'foo bar text'
@@ -82,7 +83,8 @@ def test_write_to_s3(s3_tmpdir):
 
     fs, fs_prefix_path = fsspec.url_to_fs(s3_tmpdir)
 
-    writer = cdx_toolkit.warc.get_writer(s3_tmpdir, None, info)
+    with pytest.warns(FutureWarning, match='deprecated'):
+        writer = cdx_toolkit.warc.get_writer(s3_tmpdir, None, info)
 
     # single record
     input_resource_record_text = 'foo bar text'

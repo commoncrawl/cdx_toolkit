@@ -300,5 +300,18 @@ The `repackage` command of the unreleased `feat/warc-range-sources` branch (#73)
 
 ## Python API
 
-The Python API (`cdx_toolkit.CDXFetcher`, `cdx.iter()`, `cdx_toolkit.warc.get_writer()`, ...) has
-not changed. Only the command line tool is affected.
+`cdx_toolkit.CDXFetcher`, `cdx.iter()`, `cdx.get_size_estimate()` and `capture.content` have not
+changed. New: the Python equivalents of the new commands, which run the same code as the command line
+(see the README):
+
+```python
+from cdx_toolkit.indexes import IndexQuery, open_index
+from cdx_toolkit.repackage import repackage
+
+index = open_index('cc')                                     # cdxt index cc
+query = IndexQuery(urls='commoncrawl.org/*', limit=10)       #   --url 'commoncrawl.org/*' --limit 10
+repackage(index.records(query), prefix='COMMONCRAWL')        # | cdxt repackage --prefix COMMONCRAWL
+```
+
+`cdx_toolkit.warc.get_writer()` (`CDXToolkitWARCWriter`) is deprecated and will be removed in
+cdx_toolkit 1.0; `repackage()` replaces it.

@@ -3,6 +3,14 @@ from tests.conftest import requires_aws_s3
 from unittest.mock import Mock
 import pytest
 
+# the tests of the deprecated writer (see test_writer_is_deprecated)
+pytestmark = pytest.mark.filterwarnings('ignore:cdx_toolkit.warc.get_writer:FutureWarning')
+
+
+def test_writer_is_deprecated(tmp_path):
+    with pytest.warns(FutureWarning, match='use cdx_toolkit.repackage.repackage'):
+        cdx_toolkit.warc.get_writer(str(tmp_path / 'out'), None, {})
+
 
 def test_wb_redir_to_original():
     location = 'https://web.archive.org/web/20110209062054id_/http://commoncrawl.org/'
