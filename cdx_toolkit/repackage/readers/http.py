@@ -1,4 +1,9 @@
+'''
+Range reads over HTTP(S).
+'''
+import asyncio
 import re
+import threading
 from typing import Optional
 
 
@@ -25,3 +30,32 @@ def check_range_response(status: int, content_range: Optional[str], body_length:
         raise RangeError(f'{url}: unexpected status {status} for the range request for bytes {offset}-{end}')
     if body_length != length:
         raise RangeError(f'{url}: requested {length} bytes from offset {offset}, got {body_length}')
+
+
+async def run_in_daemon_thread(func, *args, **kwargs):
+    """Run a blocking function in a daemon thread of its own (like asyncio.to_thread).
+
+    Unlike asyncio.to_thread, nothing waits for a cancelled call: not the cancelled task, not asyncio.run() (which
+    waits for the threads of the default executor) and not the interpreter at exit."""
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+
+    def set_result(result, exception):
+        if not future.cancelled():
+            if exception is not None:
+                future.set_exception(exception)
+            else:
+                future.set_result(result)
+
+    def run():
+        try:
+            result, exception = func(*args, **kwargs), None
+        except BaseException as e:
+            result, exception = None, e
+        try:
+            loop.call_soon_threadsafe(set_result, result, exception)
+        except RuntimeError:
+            pass  # the event loop is closed: nobody waits for the result anymore
+
+    threading.Thread(target=run, daemon=True).start()
+    return await future

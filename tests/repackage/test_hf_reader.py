@@ -5,15 +5,15 @@ from unittest.mock import patch
 
 import pytest
 
-from cdx_toolkit.repackage.hf_utils import (
+from cdx_toolkit.repackage.readers.hf import (
     HfHttpReader,
     make_hf_reader,
     signed_url_expiry,
-    is_hf_url,
     hf_fs_path,
     hf_resolve_url,
     retry_after_seconds,
 )
+from cdx_toolkit.repackage.urls import is_hf_url
 
 
 def test_is_hf_url():
@@ -183,7 +183,7 @@ def test_waits_on_resolver_rate_limit():
     async def no_sleep(_):
         return None
 
-    with patch('cdx_toolkit.repackage.hf_utils.asyncio.sleep', side_effect=no_sleep):
+    with patch('cdx_toolkit.repackage.readers.hf.asyncio.sleep', side_effect=no_sleep):
         assert asyncio.run(_read(reader, WARC_A, 0, 4)) == DATA[0:4]
 
     assert reader.throttle_count == 2
@@ -233,7 +233,7 @@ def test_cdn_rate_limit_is_waited_out(caplog):
         await reader.aclose()
         return data
 
-    with caplog.at_level('INFO', logger='cdx_toolkit.repackage.hf_utils'):
+    with caplog.at_level('INFO', logger='cdx_toolkit.repackage.readers.hf'):
         assert asyncio.run(run()) == DATA[0:4]
     assert reader.throttle_count == 1
     assert 'HF reader: 1 records read with 1 resolve requests' in caplog.text

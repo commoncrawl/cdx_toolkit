@@ -332,7 +332,7 @@ def test_sql_without_url_column_to_repackage(parquet_index, tmp_path, capsys):
     assert [json.loads(line) for line in captures.read_text().splitlines()] == [
         {'filename': 'a.warc.gz', 'offset': capture['offset'], 'length': capture['length']}
     ]
-    with patch('cdx_toolkit.repackage.data_classes.myrequests_get', side_effect=server.get):
+    with patch('cdx_toolkit.repackage.jobs.myrequests_get', side_effect=server.get):
         main(['repackage', str(captures), '--prefix', str(tmp_path / 'out'),
               '--warc-download-prefix', 'https://data.example.org'])
     assert len(list(tmp_path.glob('out-*.warc.gz'))) == 1

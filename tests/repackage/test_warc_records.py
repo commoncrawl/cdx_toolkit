@@ -1,7 +1,8 @@
 import fsspec
 import pytest
 
-from cdx_toolkit.repackage.warc_utils import existing_warc_files, get_metadata_record_from_path
+from cdx_toolkit.repackage.warc_records import get_metadata_record_from_path
+from cdx_toolkit.repackage.writers.series import existing_warc_files
 from tests.conftest import TEST_DATA_PATH
 
 

@@ -1,9 +1,7 @@
 import logging
 from typing import List, Dict, Optional
 
-from cdx_toolkit.repackage.s3_utils import (
-    with_retries,
-)
+from cdx_toolkit.repackage.retries import with_retries
 
 logger = logging.getLogger(__name__)
 

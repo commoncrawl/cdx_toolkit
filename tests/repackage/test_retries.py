@@ -3,11 +3,8 @@ import pytest
 import asyncio
 
 
-from cdx_toolkit.repackage.s3_utils import (
-    _backoff,
-    parse_s3_uri,
-    with_retries,
-)
+from cdx_toolkit.repackage.retries import _backoff, with_retries
+from cdx_toolkit.repackage.urls import parse_s3_uri
 
 # the retry tests raise botocore's exceptions (S3 support is optional: cdx_toolkit[s3])
 pytest.importorskip('botocore')

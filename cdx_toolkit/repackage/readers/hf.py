@@ -23,17 +23,12 @@ import time
 from typing import Tuple
 from urllib.parse import parse_qs, urlparse
 
-from cdx_toolkit.repackage.http_range import check_range_response
+from cdx_toolkit.repackage.readers.http import check_range_response
+from cdx_toolkit.repackage.urls import HF_SCHEME, is_hf_url
 
 logger = logging.getLogger(__name__)
 
-HF_SCHEME = 'hf://'
 HF_ENDPOINT = 'https://huggingface.co'
-
-
-def is_hf_url(url) -> bool:
-    """True for an ``hf://`` URL (e.g. an hf:// WARC download prefix or job URL)."""
-    return bool(url) and url.startswith(HF_SCHEME)
 
 
 def hf_fs_path(url: str) -> str:

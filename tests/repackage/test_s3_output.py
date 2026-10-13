@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from cdx_toolkit.repackage.s3_writer import S3ShardWriter, mpu_abort
+from cdx_toolkit.repackage.writers.s3 import S3ShardWriter, mpu_abort
 
 
 def test_mpu_abort_success():

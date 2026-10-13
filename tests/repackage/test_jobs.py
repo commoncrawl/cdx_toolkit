@@ -1,4 +1,4 @@
-from cdx_toolkit.repackage.records_source import join_warc_url
+from cdx_toolkit.repackage.jobs import join_warc_url
 
 
 def test_join_warc_url_relative():

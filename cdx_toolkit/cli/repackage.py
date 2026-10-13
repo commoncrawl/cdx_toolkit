@@ -172,7 +172,7 @@ def run(args: Namespace, cmdline: str):
 def check_output_is_new(prefix: str, subprefix: Optional[str]) -> None:
     """Every run numbers its files from the start: never overwrite (or mix with) the files of an earlier run, with
     or without --wb."""
-    from cdx_toolkit.repackage.warc_utils import existing_warc_files
+    from cdx_toolkit.repackage.writers.series import existing_warc_files
 
     existing = existing_warc_files(prefix, subprefix)
     if existing:
@@ -186,8 +186,8 @@ def repackage_by_warc_location(args: Namespace, records, info: dict):
     """Copy the WARC records byte-for-byte with the async WARC fetcher (optionally multi-process)."""
     import fsspec
 
-    from cdx_toolkit.repackage.hf_utils import is_hf_url
-    from cdx_toolkit.repackage.records_source import MissingWarcLocation, RecordsSource
+    from cdx_toolkit.repackage.urls import is_hf_url
+    from cdx_toolkit.repackage.jobs import MissingWarcLocation, RecordsSource
     try:
         source = RecordsSource(records, args.warc_download_prefix, sort=not args.no_sort)
 
@@ -213,7 +213,7 @@ def repackage_by_warc_location(args: Namespace, records, info: dict):
                 max_file_size=args.size,
             )
 
-        from cdx_toolkit.repackage.warc_filter import WARCFilter
+        from cdx_toolkit.repackage.pipeline import WARCFilter
 
         return WARCFilter(
             source=source,
@@ -239,7 +239,7 @@ def repackage_from_wayback(args: Namespace, records, info: dict):
         if used:
             raise UsageError(f'{option} cannot be used with --wb')
 
-    from cdx_toolkit.repackage.data_classes import RepackageResult
+    from cdx_toolkit.repackage.jobs import RepackageResult
 
     wb = WAYBACK_NAMES.get(args.wb, args.wb)
     requested = written = 0

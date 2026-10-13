@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Optional, Tuple
+from typing import Tuple
 from os import urandom
 
 try:
@@ -28,21 +28,6 @@ RETRYABLE_ERRORS = (
 
 
 logger = logging.getLogger(__name__)
-
-
-def parse_s3_uri(uri: str) -> Tuple[str, str]:
-    """Parse a S3 URI and return bucket and prefix."""
-    if not uri.startswith('s3://'):
-        raise ValueError(f'Not an S3 URI: {uri}')
-    rest = uri[5:]
-    i = rest.find('/')
-    if i <= 0 or i == len(rest) - 1:
-        raise ValueError(f'Malformed S3 URI: {uri}')
-    return rest[:i], rest[i+1:]
-
-
-def is_s3_url(url: Optional[str]) -> bool:
-    return bool(url) and url.startswith('s3:/')
 
 
 async def with_retries(coro_factory, *, op_name: str, max_attempts: int, base_backoff_seconds: float,

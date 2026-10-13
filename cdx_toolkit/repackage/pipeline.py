@@ -5,18 +5,19 @@ import logging
 import os
 import statistics
 import threading
+import time
+from dataclasses import dataclass
 from typing import Callable, List, Optional, Dict
 
 
 from cdx_toolkit.aws import botocore_config
-from cdx_toolkit.repackage.s3_utils import (
-    is_s3_url,
+from cdx_toolkit.repackage.jobs import RangeJob, RangePayload, RepackageResult
+from cdx_toolkit.repackage.readers import Readers
+from cdx_toolkit.repackage.urls import is_s3_url
+from cdx_toolkit.repackage.warc_records import (
+    get_bytes_from_warc_record, get_metadata_record_from_path, warcinfo_record_bytes,
 )
-from cdx_toolkit.repackage.hf_utils import make_hf_reader
-from cdx_toolkit.repackage.data_classes import RangeJob, RangePayload, RepackageResult, ThroughputTracker
-from cdx_toolkit.repackage.warc_utils import (
-    get_bytes_from_warc_record, get_metadata_record_from_path, new_warc_writer, warcinfo_record_bytes,
-)
+from cdx_toolkit.repackage.writers import new_warc_writer
 
 
 _STOP = object()
@@ -24,31 +25,36 @@ _STOP = object()
 logger = logging.getLogger(__name__)
 
 
-class Readers:
-    """The readers of WARC ranges, by the URL scheme of a range job, each created when it is first needed:
-    an S3 client for s3:// and the HF reader for hf:// (http(s):// needs none). They are closed with `stack`."""
+@dataclass
+class ThroughputTracker:
+    """Track throughput metrics for fetchers and consumers."""
 
-    def __init__(self, stack: contextlib.AsyncExitStack, s3_config_factory: Callable):
-        self.stack = stack
-        self.s3_config_factory = s3_config_factory
-        self._s3 = None
-        self._hf = None
-        self._lock = asyncio.Lock()
+    start_time: float = 0.0
+    total_bytes: int = 0
+    total_requests: int = 0
+    total_records: int = 0
 
-    async def s3(self):
-        async with self._lock:
-            if self._s3 is None:
-                import aioboto3
+    def start(self):
+        self.start_time = time.time()
 
-                client = aioboto3.Session().client('s3', config=self.s3_config_factory())
-                self._s3 = await self.stack.enter_async_context(client)
-            return self._s3
+    def add(self, bytes_count: int = 0, records_count: int = 0, requests_count: int = 1):
+        self.total_bytes += bytes_count
+        self.total_requests += requests_count
+        self.total_records += records_count
 
-    async def hf(self):
-        async with self._lock:
-            if self._hf is None:
-                self._hf = await self.stack.enter_async_context(make_hf_reader())
-            return self._hf
+    def get_stats(self) -> dict:
+        elapsed = time.time() - self.start_time
+
+        return {
+            'elapsed': elapsed,
+            'total_bytes': self.total_bytes,
+            'total_requests': self.total_requests,
+            'total_records': self.total_records,
+            'bytes_per_sec': self.total_bytes / elapsed if elapsed > 0 else 0,
+            'mb_per_sec': (self.total_bytes / elapsed) / (1024 * 1024) if elapsed > 0 else 0,
+            'requests_per_sec': self.total_requests / elapsed if elapsed > 0 else 0,
+            'records_per_sec': self.total_records / elapsed if elapsed > 0 else 0,
+        }
 
 
 class WARCFilter:

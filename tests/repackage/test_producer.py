@@ -3,8 +3,8 @@ from unittest.mock import patch
 
 import pytest
 
-from cdx_toolkit.repackage.data_classes import RangeJob
-from cdx_toolkit.repackage.warc_filter import WARCFilter
+from cdx_toolkit.repackage.jobs import RangeJob
+from cdx_toolkit.repackage.pipeline import WARCFilter
 
 
 class FailingSource:

@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 from warcio import WARCWriter
 
-from cdx_toolkit.repackage.warc_utils import get_bytes_from_warc_record
+from cdx_toolkit.repackage.warc_records import get_bytes_from_warc_record
 
 
 def warc_record_bytes(url: str) -> bytes:

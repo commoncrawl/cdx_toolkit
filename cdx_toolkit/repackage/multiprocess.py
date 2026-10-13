@@ -37,11 +37,10 @@ from typing import Dict, List, Optional, Tuple
 
 from cdx_toolkit.aws import configure_fsspec_s3
 from cdx_toolkit.record_io import RecordWriter, read_records
-from cdx_toolkit.repackage.data_classes import RepackageResult
-from cdx_toolkit.repackage.records_source import RecordsSource
-from cdx_toolkit.repackage.warc_filter import WARCFilter
-from cdx_toolkit.repackage.warc_utils import generate_warc_filename
-from cdx_toolkit.repackage.s3_utils import is_s3_url, parse_s3_uri
+from cdx_toolkit.repackage.jobs import RecordsSource, RepackageResult
+from cdx_toolkit.repackage.pipeline import WARCFilter
+from cdx_toolkit.repackage.urls import is_s3_url, parse_s3_uri
+from cdx_toolkit.repackage.writers.series import generate_warc_filename
 
 logger = logging.getLogger(__name__)
 

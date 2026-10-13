@@ -1,8 +1,7 @@
-from cdx_toolkit.repackage.data_classes import ThroughputTracker
 from tests.conftest import TEST_DATA_PATH
 
-from cdx_toolkit.repackage.warc_filter import WARCFilter
-from cdx_toolkit.repackage.records_source import RecordsSource
+from cdx_toolkit.repackage.pipeline import ThroughputTracker, WARCFilter
+from cdx_toolkit.repackage.jobs import RecordsSource
 
 fixture_path = TEST_DATA_PATH / 'repackage'
 
@@ -13,7 +12,7 @@ _FAKE_SOURCE = RecordsSource([], 'https://data.commoncrawl.org')
 def test_log_writer(caplog):
     """Test log writer."""
     import logging
-    caplog.set_level(logging.INFO, logger='cdx_toolkit.repackage.warc_filter')
+    caplog.set_level(logging.INFO, logger='cdx_toolkit.repackage.pipeline')
 
     warc_filter = WARCFilter(
         source=_FAKE_SOURCE,
@@ -32,7 +31,7 @@ def test_log_writer(caplog):
 def test_log_reader(caplog):
     """Test log reader."""
     import logging
-    caplog.set_level(logging.INFO, logger='cdx_toolkit.repackage.warc_filter')
+    caplog.set_level(logging.INFO, logger='cdx_toolkit.repackage.pipeline')
 
     warc_filter = WARCFilter(
         source=_FAKE_SOURCE,

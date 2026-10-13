@@ -1,6 +1,6 @@
 import pytest
-from cdx_toolkit.repackage.data_classes import RangeJob
-from cdx_toolkit.repackage.http_range import RangeError, check_range_response
+from cdx_toolkit.repackage.jobs import RangeJob
+from cdx_toolkit.repackage.readers.http import RangeError, check_range_response
 
 
 def test_get_s3_bucket_and_key_from_http_job():

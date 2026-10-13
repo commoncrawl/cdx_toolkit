@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from cdx_toolkit.repackage.local_writer import LocalFileWriter
+from cdx_toolkit.repackage.writers.local import LocalFileWriter
 
 
 def run(coro):

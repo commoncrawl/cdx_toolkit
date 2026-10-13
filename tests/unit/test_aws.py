@@ -130,8 +130,8 @@ def test_s3fs_uses_the_defaults(no_user_config, monkeypatch):
 
 @requires_aioboto3
 def test_warc_fetcher_s3_clients(no_user_config):
-    from cdx_toolkit.repackage.records_source import RecordsSource
-    from cdx_toolkit.repackage.warc_filter import WARCFilter
+    from cdx_toolkit.repackage.jobs import RecordsSource
+    from cdx_toolkit.repackage.pipeline import WARCFilter
 
     wf = WARCFilter(source=RecordsSource([], None), prefix_path='out', writer_info={}, n_parallel_readers=4)
     read_config, write_config = wf.s3_read_config(), wf.s3_write_config()
