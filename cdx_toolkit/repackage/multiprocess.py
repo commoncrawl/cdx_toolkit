@@ -37,7 +37,7 @@ from typing import Dict, List, Optional, Tuple
 
 from cdx_toolkit.aws import configure_fsspec_s3
 from cdx_toolkit.record_io import RecordWriter, read_records
-from cdx_toolkit.repackage.jobs import RecordsSource, RepackageResult
+from cdx_toolkit.repackage.jobs import RecordsSource, RepackageResult, WaybackJob, WaybackSource
 from cdx_toolkit.repackage.repackager import Repackager
 from cdx_toolkit.repackage.urls import is_s3_url, parse_s3_uri
 from cdx_toolkit.repackage.writers.series import generate_warc_filename
@@ -79,7 +79,11 @@ def _run_worker(cfg: Dict) -> RepackageResult:
     if cfg.get('uvloop'):
         os.environ['CDXT_UVLOOP'] = '1'
     # the shard is in the order of the source (sorted, unless --no-sort), streamed
-    source = RecordsSource(read_records(cfg['shard'], 'jsonl'), warc_download_prefix=None, sort=False)
+    records = read_records(cfg['shard'], 'jsonl')
+    if cfg['wb']:
+        source = WaybackSource(records, cfg['wb'])
+    else:
+        source = RecordsSource(records, warc_download_prefix=None, sort=False)
     repackager = Repackager(
         source=source,
         prefix_path=cfg['prefix_path'],
@@ -96,11 +100,18 @@ def _run_worker(cfg: Dict) -> RepackageResult:
     return repackager.run()
 
 
-def _split_source_to_shards(source, n: int, out_dir: str) -> Tuple[List[str], List[int]]:
-    """Drain the source once into N shard files, hashed by WARC file; the records have the full WARC URL as
-    filename, so they are read without a download prefix.
+def _shard_record(job) -> dict:
+    """The record of a job in a shard: the WARC location with the full WARC URL as filename (read without a
+    download prefix), or the capture of a wayback replay."""
+    if isinstance(job, WaybackJob):
+        return dict(job.capture)
+    return {'filename': job.url, 'offset': job.offset, 'length': job.length}
 
-    Returns the shard paths and the number of range jobs in each shard."""
+
+def _split_source_to_shards(source, n: int, out_dir: str) -> Tuple[List[str], List[int]]:
+    """Drain the source once into N shard files, hashed by WARC file (or replay URL).
+
+    Returns the shard paths and the number of jobs in each shard."""
     paths = [os.path.join(out_dir, f'shard.{i}.jsonl') for i in range(n)]
     files = [open(p, 'w', encoding='utf-8') for p in paths]
     writers = [RecordWriter(f, 'jsonl') for f in files]
@@ -110,7 +121,7 @@ def _split_source_to_shards(source, n: int, out_dir: str) -> Tuple[List[str], Li
         for job in source.iter_range_jobs():
             key = (job.filename or job.url or '').encode()
             idx = int(hashlib.md5(key).hexdigest(), 16) % n
-            writers[idx].write({'filename': job.url, 'offset': job.offset, 'length': job.length})
+            writers[idx].write(_shard_record(job))
             counts[idx] += 1
             total += 1
     finally:
@@ -166,6 +177,7 @@ def run_multiprocess_repackage(
                 max_attempts=max_attempts,
                 max_file_size=max_file_size,
                 uvloop=uvloop,
+                wb=getattr(source, 'wb', None),
             )
             for shard in shards
         ]

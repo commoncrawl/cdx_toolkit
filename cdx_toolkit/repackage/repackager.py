@@ -10,7 +10,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 
 from cdx_toolkit.aws import botocore_config
-from cdx_toolkit.repackage.jobs import RangeJob, RangePayload, RepackageResult
+from cdx_toolkit.repackage.jobs import RangePayload, RepackageResult
 from cdx_toolkit.repackage.readers import Readers
 from cdx_toolkit.repackage.urls import is_s3_url
 from cdx_toolkit.repackage.writers.series import WarcFileSeries
@@ -58,12 +58,13 @@ class ThroughputTracker:
 
 
 class Repackager:
-    """Copy WARC records, byte for byte, from the WARC files of the range jobs into a series of WARC files.
+    """Copy WARC records, byte for byte, from the WARC files of the range jobs (or the records replayed from a
+    wayback machine) into a series of WARC files.
 
     A pipeline of asyncio tasks:
     - the producer drives the (sync) source in a thread and puts its range jobs into a queue,
-    - N reader tasks read the bytes of the jobs, with the RangeReader for the URL scheme of each job
-      (HTTP, S3, Hugging Face buckets; see readers/),
+    - N reader tasks read the bytes of the jobs, with the RangeReader of each job
+      (HTTP, S3, Hugging Face buckets by the URL scheme, or the wayback reader; see readers/),
     - one writer task writes them to the WarcFileSeries (local files or S3 objects; see writers/).
 
     Multi-core scaling is done with processes (see multiprocess.py), each with its own pipeline.
@@ -240,7 +241,7 @@ class Repackager:
         Args:
             range_jobs_queue: Queue for range jobs from the source.
             warc_records_queue: Queue for WARC record payloads.
-            readers: The readers of WARC ranges (by URL scheme).
+            readers: The readers of the jobs (see Readers).
             write_s3_client: Optional S3 client for writes S3.
         """
         logger.info('Starting job generator, %d WARC readers, 1 WARC writer', self.num_readers)
@@ -319,9 +320,9 @@ class Repackager:
 
         Args:
             reader_id: Unique identifier for this reader task.
-            range_jobs_queue: Queue to read RangeJob objects from.
+            range_jobs_queue: Queue to read the jobs (RangeJob, WaybackJob) from.
             warc_records_queue: Queue to put RangePayload objects into.
-            readers: The readers of WARC ranges (by URL scheme).
+            readers: The readers of the jobs (see Readers).
 
         Returns:
             The reader's throughput and the number of range jobs that could not be read.
@@ -334,14 +335,13 @@ class Repackager:
             if job is _STOP:
                 logger.info('WARC Reader %d stopping: %s', reader_id, tracker.summary())
                 return tracker, failed
-            assert isinstance(job, RangeJob)
             try:
-                reader = await readers.for_url(job.url)
+                reader = await readers.for_job(job)
                 data = await reader.read(job)
             except Exception as e:
                 # the capture is lost, the others are still fetched; the run fails at the end
                 failed += 1
-                logger.error('WARC Reader %d failed on %s [%d,%d]: %r', reader_id, job.url, job.offset, job.length, e)
+                logger.error('WARC Reader %d failed on %s: %r', reader_id, job, e)
                 continue
             tracker.add(bytes_count=len(data), records_count=job.records_count)
             self.log_progress(f'WARC Reader {reader_id}', tracker)

@@ -2,23 +2,18 @@ from argparse import Namespace, RawDescriptionHelpFormatter
 import logging
 import os
 import time
-from typing import Mapping, Optional
+from typing import Optional
 
-import cdx_toolkit.warc
 from cdx_toolkit.indexes import UsageError
 from cdx_toolkit.record_io import (
     FORMAT_CHOICES, canonical_format, check_glob, format_from_path, import_pyarrow, read_records,
 )
 from cdx_toolkit.utils import get_version
-from cdx_toolkit.warc import fetch_wb_warc
 
 from .common import IncompleteError, add_verbose_arg, parse_size, positive_int
 
 
 LOGGER = logging.getLogger(__name__)
-
-# wayback names that map to replay URLs
-WAYBACK_NAMES = {'ia': 'https://web.archive.org/web'}
 
 DESCRIPTION = '''\
 Fetch the captures listed in an index file (as written by `cdxt index`) and write them to WARC files.
@@ -28,9 +23,9 @@ byte-for-byte from --warc-download-prefix (https://, s3:// or hf://buckets/...) 
 <prefix>[-<subprefix>]-001.warc.gz, -002, ... (local, s3:// or hf://buckets/...).
 
 Captures without a WARC location (e.g. Internet Archive captures) are replayed from a wayback
-machine with --wb and written to <prefix>[-<subprefix>]-000000.extracted.warc.gz, ...
+machine with --wb and written to the same series of WARC files.
 
-WARC files with the same prefix and subprefix (of either kind) must not exist yet.
+WARC files with the same prefix and subprefix must not exist yet.
 '''
 
 EXAMPLES = '''\
@@ -155,10 +150,7 @@ def run(args: Namespace, cmdline: str):
     info = build_warcinfo(args, cmdline)
     start_time = time.time()
 
-    if args.wb:
-        result = repackage_from_wayback(args, records, info)
-    else:
-        result = repackage_by_warc_location(args, records, info)
+    result = repackage_captures(args, records, info)
 
     LOGGER.info('wrote %d of %d captures to WARC files (%d failed) in %.1f seconds',
                 result.written, result.requested, result.failed, time.time() - start_time)
@@ -182,14 +174,21 @@ def check_output_is_new(prefix: str, subprefix: Optional[str]) -> None:
         )
 
 
-def repackage_by_warc_location(args: Namespace, records, info: dict):
-    """Copy the WARC records byte-for-byte with the async WARC fetcher (optionally multi-process)."""
+def repackage_captures(args: Namespace, records, info: dict):
+    """Copy the WARC records byte-for-byte, or replay them from a wayback machine with --wb, with the async
+    repackager (optionally multi-process)."""
     import fsspec
 
     from cdx_toolkit.repackage.urls import is_hf_url
-    from cdx_toolkit.repackage.jobs import MissingWarcLocation, RecordsSource
+    from cdx_toolkit.repackage.jobs import MissingWarcLocation, RecordsSource, WaybackSource
     try:
-        source = RecordsSource(records, args.warc_download_prefix, sort=not args.no_sort)
+        if args.wb:
+            # the minimum interval between requests to the wayback machine only holds within a process
+            if args.processes > 1:
+                raise UsageError('--processes cannot be used with --wb')
+            source = WaybackSource(records, args.wb)
+        else:
+            source = RecordsSource(records, args.warc_download_prefix, sort=not args.no_sort)
 
         # make sure the output directory exists
         prefix_fs, prefix_fs_path = fsspec.url_to_fs(args.prefix)
@@ -227,36 +226,3 @@ def repackage_by_warc_location(args: Namespace, records, info: dict):
         ).run()
     except MissingWarcLocation as e:
         raise UsageError(str(e))
-
-
-def repackage_from_wayback(args: Namespace, records, info: dict):
-    """Replay the captures from a wayback machine, one by one, and write them with the WARC writer of cdx_toolkit."""
-    for option, used in (
-        ('--processes', args.processes > 1),
-        ('--parallel-readers', args.parallel_readers > 1),
-        ('--add-metadata-record', args.add_metadata_record),
-    ):
-        if used:
-            raise UsageError(f'{option} cannot be used with --wb')
-
-    from cdx_toolkit.repackage.jobs import RepackageResult
-
-    wb = WAYBACK_NAMES.get(args.wb, args.wb)
-    requested = written = 0
-    with cdx_toolkit.warc.get_writer(args.prefix, args.subprefix, info, size=args.size) as writer:
-        for capture in records:
-            requested += 1
-            try:
-                record = fetch_record(capture, wb)
-            except Exception as e:
-                LOGGER.error('cannot fetch capture %s %s: %r', capture.get('url'), capture.get('timestamp'), e)
-                continue
-            writer.write_record(record)
-            written += 1
-    return RepackageResult(requested=requested, written=written, failed=requested - written)
-
-
-def fetch_record(capture: Mapping, wb: Optional[str]):
-    if capture.get('mime') == 'warc/revisit':
-        LOGGER.warning('revisit record being resolved for url %s %s', capture['url'], capture['timestamp'])
-    return fetch_wb_warc(capture, wb=wb)

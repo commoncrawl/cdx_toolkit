@@ -1,9 +1,10 @@
 '''
-The captures to repackage: index records (as written by `cdxt index`) -> range jobs, and the result of a run.
+The captures to repackage: index records (as written by `cdxt index`) -> jobs (a WARC range, or a wayback
+replay), and the result of a run.
 '''
 import logging
-from dataclasses import dataclass
-from typing import Iterable, Iterator, Mapping, Optional
+from dataclasses import dataclass, field
+from typing import Iterable, Iterator, Mapping, Optional, Union
 
 
 logger = logging.getLogger(__name__)
@@ -35,12 +36,32 @@ class RangeJob:
     # prefix), used to sort and shard the jobs by WARC file; `url` is authoritative for fetching.
     filename: Optional[str] = None
 
+    def __str__(self) -> str:
+        return f'{self.url} [{self.offset},{self.length}]'
+
+
+@dataclass(frozen=True)
+class WaybackJob:
+    """A capture replayed from a wayback machine (`url` is its replay URL), written as one WARC record."""
+
+    url: str
+    capture: Mapping = field(compare=False)
+    wb: str
+    records_count: int = 1
+    filename: Optional[str] = None  # no WARC file
+
+    def __str__(self) -> str:
+        return self.url
+
+
+Job = Union[RangeJob, WaybackJob]
+
 
 @dataclass(frozen=True)
 class RangePayload:
-    """Bytes output from S3 or HTTP range read."""
+    """The bytes read for a job (one or more gzipped WARC records)."""
 
-    job: RangeJob
+    job: Job
     data: bytes
 
 
@@ -94,3 +115,21 @@ class RecordsSource:
             length=int(record['length']),
             filename=record['filename'],
         )
+
+
+# wayback names that map to replay URLs
+WAYBACK_NAMES = {'ia': 'https://web.archive.org/web'}
+
+
+class WaybackSource:
+    """WaybackJobs from index records (url, timestamp, status), in the order of the records: the captures are
+    replayed from the wayback machine `wb` (a replay URL prefix, or a name of WAYBACK_NAMES)."""
+
+    def __init__(self, records: Iterable[Mapping], wb: str):
+        from cdx_toolkit.warc import wb_replay_url
+
+        self.wb = WAYBACK_NAMES.get(wb, wb)
+        self.jobs = (WaybackJob(wb_replay_url(record, self.wb), record, self.wb) for record in records)
+
+    def iter_range_jobs(self) -> Iterator[WaybackJob]:
+        yield from self.jobs

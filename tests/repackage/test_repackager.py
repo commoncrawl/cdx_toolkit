@@ -22,7 +22,7 @@ from cdx_toolkit.repackage.jobs import RangeJob, RepackageResult
 from cdx_toolkit.repackage.readers.http import HttpRangeReader, RangeError
 from cdx_toolkit.repackage.readers.s3 import S3RangeReader
 from cdx_toolkit.repackage.writers.local import LocalOutputFile
-from cdx_toolkit.repackage.jobs import RecordsSource
+from cdx_toolkit.repackage.jobs import RecordsSource, WaybackSource
 from cdx_toolkit.repackage.repackager import Repackager, ThroughputTracker
 from tests.conftest import InlineExecutor
 from tests.fake_warc_server import FakeWarcServer
@@ -515,6 +515,32 @@ def test_multiprocess_repackage_keeps_the_order_of_the_source(tmp_path):
         )
     records = response_records(glob.glob(str(tmp_path / 'RUN-*.warc.gz')))
     assert [r.rec_headers.get_header('WARC-Target-URI') for r in records] == [c['url'] for c in captures]
+
+
+def test_multiprocess_repackage_of_wayback_replays(tmp_path):
+    """hf:// (and other non-S3 remote) output goes through the shards also for --wb: the shards hold the captures."""
+    from warcio.recordbuilder import RecordBuilder
+
+    def fake_fetch_wb_warc(capture, wb):
+        assert wb == 'https://web.archive.org/web'
+        return RecordBuilder().create_warc_record(capture['url'], 'resource', payload=io.BytesIO(b'x'))
+
+    captures = [{'url': f'https://example.com/{i}', 'timestamp': '20240101000000', 'status': '200'} for i in range(3)]
+    fs = fsspec.filesystem('memory')
+    with patch.object(multiprocess, 'ProcessPoolExecutor', InlineExecutor), \
+            patch('cdx_toolkit.repackage.readers.wayback.fetch_wb_warc', side_effect=fake_fetch_wb_warc):
+        result = multiprocess.run_multiprocess_repackage(
+            source=WaybackSource(captures, 'ia'), n_processes=1, readers_per_process=1,
+            prefix_path='memory://wb-test/RUN', writer_info={}, writer_subprefix=None,
+            write_paths_as_metadata_records=None, log_every_n=1, max_attempts=1, uvloop=False,
+        )
+    try:
+        assert result == RepackageResult(requested=3, written=3)
+        with fsspec.open('memory://wb-test/RUN-001.warc.gz', 'rb') as f:
+            uris = [r.rec_headers.get_header('WARC-Target-URI') for r in ArchiveIterator(f) if r.rec_type == 'resource']
+        assert uris == [c['url'] for c in captures]
+    finally:
+        fs.rm('/wb-test', recursive=True)
 
 
 def test_at_least_one_reader():

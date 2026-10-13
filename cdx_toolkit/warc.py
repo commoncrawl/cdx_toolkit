@@ -127,6 +127,11 @@ def fake_wb_warc(url, wb_url, resp, capture):
     )
 
 
+def wb_replay_url(capture, wb, modifier='id_'):
+    """The URL of the capture in the wayback machine `wb` (with `modifier` id_: the original content)."""
+    return f'{wb}/{capture["timestamp"]}{modifier}/{quote(capture["url"])}'
+
+
 def fetch_wb_warc(capture, wb, modifier='id_'):
     for field in ('url', 'timestamp', 'status'):
         if field not in capture:  # pragma: no cover
@@ -136,9 +141,7 @@ def fetch_wb_warc(capture, wb, modifier='id_'):
         raise ValueError('No wayback configured')
 
     url = capture['url']
-    timestamp = capture['timestamp']
-
-    wb_url = f'{wb}/{timestamp}{modifier}/{quote(url)}'
+    wb_url = wb_replay_url(capture, wb, modifier)
 
     kwargs = {}
     status = capture['status']

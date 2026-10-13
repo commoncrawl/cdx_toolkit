@@ -363,7 +363,7 @@ def test_warc_prefix_1(tmpdir):
 @conditional_mock_responses
 def test_warc_prefix_2(tmpdir):
     warc_test_helper(tmpdir, 'index ia --limit 1 --url commoncrawl.org/*', '--wb ia')
-    assert tmpdir.listdir(fil='REPACKAGE-*.extracted.warc.gz')
+    assert tmpdir.listdir(fil='REPACKAGE-*.warc.gz')
 
 
 @pytest.mark.skipif(slow_ci(), reason='Slow CI')
@@ -381,7 +381,7 @@ def test_warc_prefix_4(tmpdir):
         'index https://web.archive.org/cdx/search/cdx --limit 1 --url commoncrawl.org/*',
         '--wb https://web.archive.org/web',
     )
-    assert tmpdir.listdir(fil='REPACKAGE-*.extracted.warc.gz')
+    assert tmpdir.listdir(fil='REPACKAGE-*.warc.gz')
 
 
 @conditional_mock_responses

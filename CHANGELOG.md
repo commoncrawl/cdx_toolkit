@@ -12,7 +12,8 @@
 	+ `cdxt repackage` copies WARC records byte-for-byte with the async WARC fetcher (from the feat/warc-range-sources branch):
 	  reads from https://, s3:// and hf:// (Hugging Face Storage Buckets), writes to local, s3:// or hf://,
 	  `--processes`, `--parallel-readers`, `--add-metadata-record`, glob input; output files are now named `<prefix>-001.warc.gz`
-	  (`--wb` wayback replays keep the old writer and names); with `--processes`, the processes share one file counter
+	  (`--wb` wayback replays too, which now work with `--parallel-readers` and `--add-metadata-record`); with
+	  `--processes`, the processes share one file counter
 	  and write the final file names directly, so each `warcinfo` record names its own file
 	+ `hf://` WARC reads resolve each WARC file once and read its records from the signed CDN URL
 	  (one HF Resolvers rate-limit request per WARC file instead of per record)

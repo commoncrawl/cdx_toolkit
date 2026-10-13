@@ -55,13 +55,13 @@ def test_repackage_with_wb_logs_revisit(tmp_path, caplog):
     captures = _write_captures(tmp_path / 'captures.jsonl', [dict(IA_CAPTURE, mime='warc/revisit')])
     prefix = str(tmp_path / 'out')
 
-    with patch.object(cdx_toolkit.cli.repackage, 'fetch_wb_warc', return_value=_make_fake_record()) as fetch:
-        with caplog.at_level('WARNING', logger='cdx_toolkit.cli.repackage'):
+    with patch('cdx_toolkit.repackage.readers.wayback.fetch_wb_warc', return_value=_make_fake_record()) as fetch:
+        with caplog.at_level('WARNING', logger='cdx_toolkit.repackage.readers.wayback'):
             main(['repackage', captures, '--wb', 'ia', '--prefix', prefix])
 
     assert fetch.call_args.kwargs['wb'] == 'https://web.archive.org/web'
     assert 'revisit record being resolved' in caplog.text
-    assert list(tmp_path.glob('out-*.warc.gz'))
+    assert [p.name for p in tmp_path.glob('out-*')] == ['out-001.warc.gz']
 
 
 def test_repackage_fetches_by_warc_location(tmp_path):
@@ -90,7 +90,7 @@ def test_repackage_rejects_existing_warc_files_with_and_without_wb(tmp_path, cap
     captures = _write_captures(tmp_path / 'captures.jsonl', [IA_CAPTURE if wb else CC_CAPTURE])
     wb_args = ['--wb', 'ia'] if wb else []
 
-    with patch.object(cdx_toolkit.cli.repackage, 'fetch_wb_warc') as fetch, \
+    with patch('cdx_toolkit.repackage.readers.wayback.fetch_wb_warc') as fetch, \
             patch('cdx_toolkit.repackage.readers.http.myrequests_get') as get, \
             pytest.raises(SystemExit) as exc:
         main(['repackage', captures, '--prefix', str(tmp_path / 'out')] + wb_args)
@@ -193,21 +193,39 @@ def test_repackage_with_wb_rejects_fetcher_options(tmp_path, capsys):
     assert '--processes cannot be used with --wb' in capsys.readouterr().err
 
 
-def test_repackage_with_wb_passes_size_and_warcinfo_to_writer(tmp_path):
-    captures = _write_captures(tmp_path / 'captures.jsonl', [])
+def test_repackage_with_wb_passes_size_and_warcinfo_to_the_repackager(tmp_path):
+    captures = _write_captures(tmp_path / 'captures.jsonl', [IA_CAPTURE])
 
-    with patch.object(cdx_toolkit.warc, 'get_writer', wraps=cdx_toolkit.warc.get_writer) as get_writer:
+    with patch('cdx_toolkit.repackage.repackager.Repackager') as repackager:
+        repackager.return_value.run.return_value = RepackageResult()
         main([
             'repackage', captures, '--wb', 'ia', '--prefix', 'FOO', '--subprefix', 'BAR', '--size', '1MiB',
-            '--creator', 'me', '--description', 'test',
+            '--creator', 'me', '--description', 'test', '--parallel-readers', '2',
         ])
 
-    prefix, subprefix, info = get_writer.call_args.args
-    assert (prefix, subprefix) == ('FOO', 'BAR')
-    assert get_writer.call_args.kwargs == {'size': 1024 * 1024}
-    assert info['isPartOf'] == 'FOO-BAR'
-    assert info['creator'] == 'me'
-    assert info['description'] == 'test'
+    kwargs = repackager.call_args.kwargs
+    assert (kwargs['prefix_path'], kwargs['writer_subprefix']) == ('FOO', 'BAR')
+    assert (kwargs['max_file_size'], kwargs['n_parallel_readers']) == (1024 * 1024, 2)
+    info = kwargs['writer_info']
+    assert (info['isPartOf'], info['creator'], info['description']) == ('FOO-BAR', 'me', 'test')
+    jobs = list(kwargs['source'].iter_range_jobs())
+    assert [job.url for job in jobs] == ['https://web.archive.org/web/20240101120000id_/http%3A//example.com']
+
+
+def test_repackage_with_wb_writes_the_warc_series(tmp_path):
+    """Replays are written like copied records: -001.warc.gz with the warcinfo and metadata records, also with
+    parallel readers."""
+    captures = _write_captures(tmp_path / 'captures.jsonl', [IA_CAPTURE] * 3)
+    metadata = tmp_path / 'metadata.txt'
+    metadata.write_text('about this run')
+
+    with patch('cdx_toolkit.repackage.readers.wayback.fetch_wb_warc', side_effect=lambda *a, **k: _make_fake_record()):
+        main(['repackage', captures, '--wb', 'ia', '--prefix', str(tmp_path / 'out'), '--parallel-readers', '2',
+              '--add-metadata-record', str(metadata)])
+
+    assert [p.name for p in tmp_path.glob('out-*')] == ['out-001.warc.gz']
+    with open(tmp_path / 'out-001.warc.gz', 'rb') as f:
+        assert [r.rec_type for r in ArchiveIterator(f)] == ['warcinfo', 'metadata'] + ['response'] * 3
 
 
 @pytest.mark.parametrize(
@@ -311,7 +329,7 @@ def test_repackage_fails_if_the_output_cannot_be_created(tmp_path):
 def test_repackage_with_wb_counts_failed_captures(tmp_path, capsys):
     path = _write_captures(tmp_path / 'captures.jsonl', [IA_CAPTURE, IA_CAPTURE])
     fetched = [RuntimeError('404'), _make_fake_record()]
-    with patch.object(cdx_toolkit.cli.repackage, 'fetch_wb_warc', side_effect=fetched), \
+    with patch('cdx_toolkit.repackage.readers.wayback.fetch_wb_warc', side_effect=fetched), \
             pytest.raises(SystemExit) as exc:
         main(['repackage', path, '--wb', 'ia', '--prefix', str(tmp_path / 'out')])
     assert exc.value.code == 1

@@ -179,7 +179,8 @@ the index), and can be fetched in parallel (`--parallel-readers`, `--processes`)
 
 **Internet Archive** captures have no WARC location; they are replayed from the wayback machine.
 Before, `--ia` did this automatically. Now pass `--wb ia` (or the URL of another wayback machine).
-These are written as before, to `<prefix>[-<subprefix>]-000000.extracted.warc.gz`, ...:
+They are written like Common Crawl captures, to `<prefix>[-<subprefix>]-001.warc.gz`, ... (before:
+`-000000.extracted.warc.gz`, ...), and can be fetched with `--parallel-readers`:
 
 ```sh
 # old
