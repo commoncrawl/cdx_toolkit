@@ -389,6 +389,11 @@ class Repackager:
                 tracker.add(bytes_count=len(item.data), records_count=item.job.records_count)
                 self.log_progress('WARC Writer', tracker)
             await series.close()
+        except asyncio.CancelledError:
+            # stopped by the pipeline: another task (e.g. the source) failed, or the run was cancelled
+            logger.info('WARC writer stopped, aborting the current WARC file')
+            await series.abort()
+            raise
         except BaseException:
             logger.error('WARC writer failed, aborting the current WARC file')
             await series.abort()
