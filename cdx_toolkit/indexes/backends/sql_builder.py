@@ -71,37 +71,26 @@ def domain_predicate(domain: str) -> str:
     return f'(url_host_registered_domain IN ({registered}) AND ({surt_match}))'
 
 
-def build_where_sql(
-    url_host_names: Optional[List[str]] = None,
-    crawls: Optional[List[str]] = None,
-    url_host_registered_domains: Optional[List[str]] = None,
-    conditions: Optional[List[str]] = None,
-    url_surtkey_prefixes: Optional[List[str]] = None,
-    url_surtkeys: Optional[List[str]] = None,
-) -> str:
-    """Build the WHERE body (without the `WHERE` keyword) shared by all SQL engines.
+def build_where_sql(query: IndexQuery, crawls: Optional[List[str]] = None) -> str:
+    """Build the WHERE body (without the `WHERE` keyword) of a guided query, shared by all SQL engines.
 
-    The guided filter matches on `url_host_name` (exact host, e.g. www.example.com),
-    domains with their subdomains (see domain_predicate) and/or `url_surtkey` (SURT keys
-    of URL patterns: `url_surtkey_prefixes` match all keys starting with them,
-    `url_surtkeys` exactly); predicates are OR-ed together.
-    At least one host, domain or SURT key is required. If `crawls` is a non-empty list
-    of crawl names (e.g. ['CC-MAIN-2025-33']), a `crawl IN (...)` partition filter is
-    added -- the main lever for reducing scan cost. `conditions` are further (already
-    escaped) predicates that are AND-ed. Engines differ only in their FROM clause (see
+    The URL selectors are OR-ed: --hostname matches `url_host_name` (exact host, e.g. www.example.com),
+    --domain the domain with its subdomains (see domain_predicate), --url the `url_surtkey` (SURT prefixes or
+    exact keys). At least one of them is required. If `crawls` is a non-empty list of crawl names (e.g.
+    ['CC-MAIN-2025-33']), a `crawl IN (...)` partition filter is added -- the main lever for reducing scan cost.
+    --from, --to and --language are AND-ed (see query_conditions). Engines differ only in their FROM clause (see
     build_sql)."""
-    url_host_names = [normalize_host(h) for h in url_host_names or []]
-    domains = [normalize_host(d) for d in url_host_registered_domains or []]
-    surt_prefixes = url_surtkey_prefixes or []
-    surts = url_surtkeys or []
-    if not url_host_names and not domains and not surt_prefixes and not surts:
+    hostnames = [normalize_host(h) for h in query.hostnames]
+    domains = [normalize_host(d) for d in query.domains]
+    surt_prefixes, surts = url_surtkeys(query)
+    if not hostnames and not domains and not surt_prefixes and not surts:
         raise ValueError('an index query requires at least one hostname, registered domain or URL')
 
-    tlds = {v.split('.')[-1] for v in (list(url_host_names) + list(domains))}
+    tlds = {v.split('.')[-1] for v in hostnames + domains}
     tlds |= {surt_tld(s) for s in surt_prefixes + surts}
     query_tlds = ' OR '.join(f'url_host_tld = {escape_sql_literal(t)}' for t in sorted(tlds))
 
-    host_predicates = [f'url_host_name = {escape_sql_literal(h)}' for h in url_host_names]
+    host_predicates = [f'url_host_name = {escape_sql_literal(h)}' for h in hostnames]
     host_predicates += [domain_predicate(d) for d in domains]
     host_predicates += [f'url_surtkey = {quote_sql_string(s)}' for s in surts]
     host_predicates += [f'url_surtkey {sql_like_prefix(s)}' for s in surt_prefixes]
@@ -115,7 +104,7 @@ def build_where_sql(
     if crawls:
         crawl_in = ', '.join(escape_sql_literal(c) for c in crawls)
         clauses.append(f'crawl IN ({crawl_in})')
-    clauses.extend(conditions or [])
+    clauses.extend(query_conditions(query))
 
     return '\n        AND '.join(clauses)
 
@@ -127,29 +116,21 @@ ORDER_BY_SQL = 'ORDER BY warc_filename, warc_record_offset'
 
 
 def build_sql(
+    query: IndexQuery,
     from_clause: str,
-    url_host_names: Optional[List[str]] = None,
     crawls: Optional[List[str]] = None,
-    limit: int = 0,
-    url_host_registered_domains: Optional[List[str]] = None,
     order_by: bool = True,
     columns: Optional[List[str]] = None,
-    conditions: Optional[List[str]] = None,
-    url_surtkey_prefixes: Optional[List[str]] = None,
-    url_surtkeys: Optional[List[str]] = None,
 ) -> str:
-    """Assemble a full SELECT for the columnar index.
+    """The SELECT of a guided query (--url, --hostname, --domain, ...) of the columnar index.
 
-    `from_clause` is the text following FROM (e.g. `ccindex` for Athena, or a
-    `read_parquet(...)` expression for DuckDB). When `order_by` is set, results are
-    sorted by (warc_filename, warc_record_offset) for fetch-time read locality.
-    `columns` defaults to the WARC location columns."""
-    where_sql = build_where_sql(
-        url_host_names, crawls, url_host_registered_domains=url_host_registered_domains, conditions=conditions,
-        url_surtkey_prefixes=url_surtkey_prefixes, url_surtkeys=url_surtkeys,
-    )
+    `from_clause` is the text following FROM (e.g. `ccindex` for Athena, or a `read_parquet(...)` expression for
+    DuckDB); `crawls` adds a partition filter (see build_where_sql). When `order_by` is set, results are sorted by
+    (warc_filename, warc_record_offset) for fetch-time read locality. `columns` defaults to the WARC location
+    columns."""
+    where_sql = build_where_sql(query, crawls)
     order_sql = f'\n    {ORDER_BY_SQL}' if order_by else ''
-    limit_sql = f'\n    LIMIT {limit}' if limit and limit > 0 else ''
+    limit_sql = f'\n    LIMIT {query.limit}' if query.limit and query.limit > 0 else ''
     columns_sql = ', '.join(columns or ('warc_filename', 'warc_record_offset', 'warc_record_length'))
 
     return f"""

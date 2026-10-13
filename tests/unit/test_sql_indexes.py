@@ -105,9 +105,10 @@ def test_duckdb_guided_query_prunes_crawls():
     query = IndexQuery(hostnames=['www.example.com'], domains=['example.org'], crawl='CC-MAIN-2024-33', limit=5)
 
     with patch('cdx_toolkit.indexes.backends.sql.resolve_crawl_names', return_value=['CC-MAIN-2024-33']):
-        sql, n_crawls = backend.prepare(query)
+        plan = backend.plan(query)
+    sql = plan.sql
 
-    assert n_crawls == 1
+    assert plan.n_crawls == 1
     assert "read_parquet(['s3://bucket/index/crawl=CC-MAIN-2024-33/subset=warc/*.parquet']" in sql
     assert 'crawl IN' not in sql  # pruned by the glob
     assert ("url_host_name = 'www.example.com' OR (url_host_registered_domain IN ('example.org') "
@@ -119,7 +120,7 @@ def test_duckdb_guided_query_prunes_crawls():
 
 def test_guided_query_url_patterns():
     query = IndexQuery(urls=['example.com/a_b*', 'https://www.example.org/', '*.example.net'], domains=['example.com'])
-    sql, _ = AthenaBackend(ATHENA).prepare(query)
+    sql = AthenaBackend(ATHENA).plan(query).sql
 
     assert "(url_host_tld = 'com' OR url_host_tld = 'net' OR url_host_tld = 'org')" in sql
     assert ("((url_host_registered_domain IN ('example.com') AND (url_surtkey LIKE 'com,example)%' ESCAPE '\\' "
@@ -130,7 +131,7 @@ def test_guided_query_url_patterns():
 
 def test_guided_query_time_range_and_languages():
     query = IndexQuery(hostnames=['example.com'], from_ts='2024', to='20240410', languages=['deu', 'fra'])
-    sql, _ = AthenaBackend(ATHENA).prepare(query)
+    sql = AthenaBackend(ATHENA).plan(query).sql
 
     assert "fetch_time >= TIMESTAMP '2024-01-01 00:00:00'" in sql
     assert "fetch_time < TIMESTAMP '2024-04-11 00:00:00'" in sql
@@ -142,20 +143,21 @@ def test_athena_guided_query_and_cost_guard():
     backend = AthenaBackend(ATHENA)
     query = IndexQuery(domains=['example.com'])
 
-    sql, n_crawls = backend.prepare(query)
-    assert n_crawls is None
+    plan = backend.plan(query)
+    sql = plan.sql
+    assert plan.n_crawls is None
     assert 'FROM ccindex' in sql
 
     # not restricted to crawls -> confirmation needed, refused in non-interactive mode
     with patch('cdx_toolkit.indexes.backends.sql.sys.stdin') as stdin, patch.object(backend, 'iter_sql_rows') as rows:
         stdin.isatty.return_value = False
         with pytest.raises(SystemExit, match='--yes'):
-            list(backend.iter_records(query))
+            list(backend.records(query))
         rows.assert_not_called()
 
     backend.assume_yes = True
     with patch.object(backend, 'iter_sql_rows', return_value=iter([{'url': 'https://example.com/'}])) as rows:
-        assert list(backend.iter_records(query)) == [{'url': 'https://example.com/'}]
+        assert list(backend.records(query)) == [{'url': 'https://example.com/'}]
         assert rows.call_args.args == (sql,)
 
 
@@ -295,7 +297,7 @@ def test_check_language(code, language):
 
 
 def test_languages_are_normalized_in_the_query():
-    sql, _ = AthenaBackend(ATHENA).prepare(IndexQuery(hostnames=['example.com'], languages=['DEU']))
+    sql = AthenaBackend(ATHENA).plan(IndexQuery(hostnames=['example.com'], languages=['DEU'])).sql
     assert "content_languages = 'deu'" in sql
 
 

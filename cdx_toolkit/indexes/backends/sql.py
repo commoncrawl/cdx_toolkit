@@ -1,13 +1,15 @@
 '''
 The common logic of the backends for the columnar URL index (parquet), queried with SQL (see duckdb.py, athena.py).
 '''
+from abc import abstractmethod
+from dataclasses import dataclass
 import datetime
 import logging
 import re
 import sys
 from typing import Iterator, List, Mapping, Optional, Tuple
 
-from ..base import IndexBackend, UsageError
+from ..base import IndexBackend, QueryPlan, UsageError
 from ..query import IndexQuery, field_flag
 from .sql_builder import build_sql, query_conditions, resolve_crawl_names, url_surtkeys
 
@@ -127,47 +129,49 @@ class SqlBackend(IndexBackend):
             url_surtkeys(query)  # check --url
             query_conditions(query)  # check --from, --to and --language
 
+    @abstractmethod
     def from_clause(self, crawls: Optional[List[str]]) -> Tuple[str, bool]:
         """FROM expression for the guided query, and whether it already prunes the crawls."""
         raise NotImplementedError  # pragma: no cover
 
+    @abstractmethod
     def iter_sql_rows(self, sql: str) -> Iterator[dict]:
+        """Run the SQL and yield the result rows as dicts (column name -> value)."""
         raise NotImplementedError  # pragma: no cover
 
-    def prepare(self, query: IndexQuery, order_by: bool = True) -> Tuple[str, Optional[int]]:
-        """The SQL to run and the number of crawls it is restricted to (None = unknown)."""
+    def plan(self, query: IndexQuery, order_by: bool = True) -> 'SqlPlan':
+        """The SQL to run (--sql, or the guided query) and the number of crawls it is restricted to."""
         if query.sql:
-            return query.sql.strip().rstrip(';'), None
+            return SqlPlan(self.name, self.location, query.sql.strip().rstrip(';'), n_crawls=None)
         crawls = resolve_crawl_names(query.crawl) if query.crawl else None
         from_clause, prunes_crawls = self.from_clause(crawls)
-        surtkey_prefixes, surtkeys = url_surtkeys(query)
         sql = build_sql(
-            from_clause,
-            query.hostnames,
-            crawls=None if prunes_crawls else crawls,
-            limit=query.limit or 0,
-            url_host_registered_domains=query.domains,
-            order_by=order_by,
-            columns=list(COLUMNS),
-            conditions=query_conditions(query),
-            url_surtkey_prefixes=surtkey_prefixes,
-            url_surtkeys=surtkeys,
+            query, from_clause, crawls=None if prunes_crawls else crawls, order_by=order_by, columns=list(COLUMNS),
         )
-        return sql, len(crawls) if crawls else None
+        return SqlPlan(self.name, self.location, sql, n_crawls=len(crawls) if crawls else None)
 
-    def iter_records(self, query: IndexQuery) -> Iterator[Mapping]:
-        sql, n_crawls = self.prepare(query)
-        confirm_cost(n_crawls, self.engine, self.assume_yes)
-        for row in self.iter_sql_rows(sql):
+    def select(self, query: IndexQuery) -> Iterator[Mapping]:
+        plan = self.plan(query)
+        confirm_cost(plan.n_crawls, self.engine, self.assume_yes)
+        for row in self.iter_sql_rows(plan.sql):
             yield normalize_row(row)
 
     def count(self, query: IndexQuery) -> int:
-        sql, n_crawls = self.prepare(query, order_by=False)
-        confirm_cost(n_crawls, self.engine, self.assume_yes)
-        row = next(self.iter_sql_rows(f'SELECT count(*) AS n FROM ({sql}) AS q'))
+        plan = self.plan(query, order_by=False)
+        confirm_cost(plan.n_crawls, self.engine, self.assume_yes)
+        row = next(self.iter_sql_rows(f'SELECT count(*) AS n FROM ({plan.sql}) AS q'))
         return int(row['n'])
 
-    def explain(self, query: IndexQuery) -> str:
-        sql, n_crawls = self.prepare(query)
-        scope = f'{n_crawls} crawl(s)' if n_crawls else 'all crawls (or not verifiable)'
-        return f'-- {self.name} query on {self.location}, restricted to {scope}\n{sql.strip()}\n'
+
+@dataclass
+class SqlPlan(QueryPlan):
+    """The SQL of a query and the number of crawls it is restricted to (None: all crawls, or unknown for --sql)."""
+
+    backend_name: str
+    location: str
+    sql: str
+    n_crawls: Optional[int]
+
+    def describe(self) -> str:
+        scope = f'{self.n_crawls} crawl(s)' if self.n_crawls else 'all crawls (or not verifiable)'
+        return f'-- {self.backend_name} query on {self.location}, restricted to {scope}\n{self.sql.strip()}\n'

@@ -9,15 +9,15 @@ import logging
 import os
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
-from typing import Iterator, List, Mapping, Optional, Tuple
+from itertools import islice
+from typing import Iterator, List, Mapping, NamedTuple, Optional, Tuple
 
 from cdx_toolkit.record_io import check_glob, format_from_path, is_glob, open_text, parse_cdxj_line, read_records
 from cdx_toolkit.timeutils import pad_timestamp, pad_timestamp_up
 
-from ..base import IndexBackend, UsageError
-from ..patterns import (  # noqa: F401 (url_pattern_to_surts, to_surt)
-    domain_entry_to_surts, domain_to_surts, hostname_to_surts, normalize_host, to_surt, url_hostname,
-    url_pattern_to_surts,
+from ..base import IndexBackend, QueryPlan, UsageError
+from ..patterns import (
+    domain_entry_to_surts, domain_to_surts, hostname_to_surts, normalize_host, url_hostname, url_pattern_to_surts,
 )
 from ..query import IndexQuery
 
@@ -210,48 +210,35 @@ class CdxFilesBackend(IndexBackend):
         for pattern in query.urls:
             url_pattern_to_surts(pattern)
 
-    def files(self) -> List[Tuple[str, str]]:
-        """(path, path relative to the base directory of the glob) of each CDX file."""
+    def files(self) -> List['CdxFile']:
+        """The CDX files of the location (a file or a glob)."""
         import fsspec
 
         if not is_glob(self.location):
             if '://' in self.location:
-                return [(self.location, self.location.split('?', 1)[0].rstrip('/').rsplit('/', 1)[-1])]
-            return [(self.location, os.path.basename(self.location))]  # also with backslashes on Windows
+                return [CdxFile(self.location, self.location.split('?', 1)[0].rstrip('/').rsplit('/', 1)[-1])]
+            return [CdxFile(self.location, os.path.basename(self.location))]  # also with backslashes on Windows
         fs, fs_path = fsspec.url_to_fs(self.location)
         first_glob = min(fs_path.index(c) for c in GLOB_CHARS if c in fs_path)
         base = fs_path[:fs_path.rfind('/', 0, first_glob)]
         paths = sorted(fs.glob(fs_path))
         if not paths:
             raise FileNotFoundError(f'no files found for {self.location}')
-        return [(fs.unstrip_protocol(p), p[len(base):].lstrip('/')) for p in paths]
+        return [CdxFile(fs.unstrip_protocol(p), p[len(base):].lstrip('/')) for p in paths]
 
-    def iter_records(self, query: IndexQuery) -> Iterator[Mapping]:
-        matcher = CaptureFilter.from_query(query).matcher()
-        remaining = query.limit
-        for path, _ in self.files():
-            for line in iter_matching_lines(path, matcher):
+    def plan(self, query: IndexQuery) -> 'CdxFilesPlan':
+        return CdxFilesPlan(self.location, self.files(), CaptureFilter.from_query(query))
+
+    def select(self, query: IndexQuery) -> Iterator[Mapping]:
+        plan = self.plan(query)
+        matcher = plan.capture_filter.matcher()
+        for cdx_file in plan.files:
+            for line in iter_matching_lines(cdx_file.path, matcher):
                 yield parse_cdxj_line(line)
-                if remaining is not None:
-                    remaining -= 1
-                    if remaining <= 0:
-                        return
 
     def count(self, query: IndexQuery) -> int:
         """Exact number of selected captures, at most --limit (reads all files, or until the limit)."""
-        return sum(1 for _ in self.iter_records(query))
-
-    def explain(self, query: IndexQuery) -> str:
-        capture_filter = CaptureFilter.from_query(query)
-        files = self.files()
-        lines = [f'{len(files)} CDX file(s): {self.location}']
-        lines += [f'  {path}' for path, _ in files[:20]] + (['  ...'] if len(files) > 20 else [])
-        lines.append(f'{len(capture_filter.prefixes)} SURT prefix(es), {len(capture_filter.exact)} exact URL(s)')
-        lines += [f'  prefix {p}' for p in capture_filter.prefixes[:20]]
-        lines += [f'  exact  {e}' for e in capture_filter.exact[:20]]
-        if capture_filter.from_ts or capture_filter.to:
-            lines.append(f'timestamps: {capture_filter.from_ts or "-"} to {capture_filter.to or "-"}')
-        return '\n'.join(lines) + '\n'
+        return sum(1 for _ in islice(self.select(query), query.limit))
 
     def write_per_file(self, query: IndexQuery, output_base: str, processes: int = 1) -> Tuple[int, int]:
         """Write the selected lines of each CDX file, unchanged, to <output_base>/<relative path of the file>.
@@ -262,7 +249,7 @@ class CdxFilesBackend(IndexBackend):
         capture_filter = CaptureFilter.from_query(query, url_filters=True)
         join = (lambda rel: output_base.rstrip('/') + '/' + rel) if '://' in output_base else \
             (lambda rel: os.path.join(output_base, *rel.split('/')))
-        tasks = [(path, join(rel), capture_filter) for path, rel in self.files()]
+        tasks = [(f.path, join(f.relative_path), capture_filter) for f in self.files()]
 
         if processes > 1:
             with ProcessPoolExecutor(max_workers=processes) as ex:
@@ -273,3 +260,28 @@ class CdxFilesBackend(IndexBackend):
         written = [(path, n) for path, n in results if n]
         LOGGER.info('wrote %d captures to %d of %d files', sum(n for _, n in written), len(written), len(tasks))
         return len(written), sum(n for _, n in written)
+
+
+class CdxFile(NamedTuple):
+    path: str
+    relative_path: str  # to the base directory of the glob (the path of the output with one output per file)
+
+
+@dataclass
+class CdxFilesPlan(QueryPlan):
+    """The CDX files and which of their lines are selected."""
+
+    location: str
+    files: List[CdxFile]
+    capture_filter: CaptureFilter
+
+    def describe(self) -> str:
+        f = self.capture_filter
+        lines = [f'{len(self.files)} CDX file(s): {self.location}']
+        lines += [f'  {cdx_file.path}' for cdx_file in self.files[:20]] + (['  ...'] if len(self.files) > 20 else [])
+        lines.append(f'{len(f.prefixes)} SURT prefix(es), {len(f.exact)} exact URL(s)')
+        lines += [f'  prefix {p}' for p in f.prefixes[:20]]
+        lines += [f'  exact  {e}' for e in f.exact[:20]]
+        if f.from_ts or f.to:
+            lines.append(f'timestamps: {f.from_ts or "-"} to {f.to or "-"}')
+        return '\n'.join(lines) + '\n'

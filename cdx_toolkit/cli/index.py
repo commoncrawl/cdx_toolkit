@@ -1,7 +1,7 @@
 from argparse import Namespace, RawDescriptionHelpFormatter
 import logging
 
-from cdx_toolkit.indexes import IndexQuery, UsageError, iter_index_records, resolve_index
+from cdx_toolkit.indexes import IndexQuery, UsageError, resolve_index
 from cdx_toolkit.indexes.resolve import INDEX_FORMATS
 from cdx_toolkit.record_io import (
     FORMAT_CHOICES, canonical_format, format_from_path, import_pyarrow, open_text, write_records,
@@ -250,7 +250,6 @@ def run(args: Namespace, cmdline: str):
             fh.write(f'{count}\n')
         return
 
-    n = write_records(
-        iter_index_records(backend, query), args.output, output_format, args.fields, fixed_schema=backend.fixed_schema
-    )
+    records = backend.records(query)
+    n = write_records(records, args.output, output_format, args.fields, fixed_schema=backend.fixed_schema)
     LOGGER.info('wrote %d captures to %s', n, args.output)

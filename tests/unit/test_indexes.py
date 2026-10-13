@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 import pytest
 
-from cdx_toolkit.indexes import IndexQuery, UsageError, iter_index_records, resolve_index
+from cdx_toolkit.indexes import IndexQuery, UsageError, resolve_index
 from cdx_toolkit.indexes.backends.cdx_api import CdxApiBackend
 from cdx_toolkit.indexes.backends.cdx_files import CdxFilesBackend
 from cdx_toolkit.indexes.resolve import is_cdx_api_location
@@ -80,7 +80,7 @@ def test_cdx_api_url_patterns_and_limit():
 
     with patch('cdx_toolkit.CDXFetcher') as fetcher:
         fetcher.return_value.iter.side_effect = lambda url, **params: iter(results[url])
-        records = list(CdxApiBackend('cc').iter_records(query))
+        records = list(CdxApiBackend('cc').records(query))
 
     assert [r['url'] for r in records] == ['http://example.com/a', 'http://example.com/b', 'http://www.example.org/']
 
@@ -96,7 +96,7 @@ def test_cdx_api_url_patterns_and_limit():
 def test_cdx_api_single_selector_limit_is_sent_to_the_server():
     with patch('cdx_toolkit.CDXFetcher') as fetcher:
         fetcher.return_value.iter.return_value = iter([_capture('http://example.com/a')])
-        list(CdxApiBackend('cc').iter_records(IndexQuery(urls=['example.com/*'], limit=3)))
+        list(CdxApiBackend('cc').records(IndexQuery(urls=['example.com/*'], limit=3)))
     assert fetcher.return_value.iter.call_args.kwargs == {'limit': 3}
 
 
@@ -114,12 +114,12 @@ def test_cdx_api_overlapping_selectors_return_each_capture_once():
     query = IndexQuery(urls=['example.com/*'], domains=['example.com'])
     with patch('cdx_toolkit.CDXFetcher') as fetcher:
         fetcher.return_value.iter.side_effect = lambda url, **params: iter(results[url])
-        records = list(CdxApiBackend('cc').iter_records(query))
+        records = list(CdxApiBackend('cc').records(query))
         assert [r['offset'] for r in records] == ['1', '2', '3', '4']
 
         # the limit counts distinct captures
         query.limit = 3
-        records = list(CdxApiBackend('cc').iter_records(query))
+        records = list(CdxApiBackend('cc').records(query))
         assert [r['offset'] for r in records] == ['1', '2', '3']
 
 
@@ -128,7 +128,7 @@ def test_cdx_api_closest_uses_get_and_crawl_is_normalized():
 
     with patch('cdx_toolkit.CDXFetcher') as fetcher:
         fetcher.return_value.get.return_value = [_capture('http://example.com/')]
-        records = list(CdxApiBackend('cc').iter_records(query))
+        records = list(CdxApiBackend('cc').records(query))
 
     assert len(records) == 1
     assert fetcher.call_args.kwargs == {'source': 'cc', 'crawl': ['CC-MAIN-2024-33', 'CC-MAIN-2024-30']}
@@ -149,7 +149,7 @@ def test_cdx_api_count():
         assert CdxApiBackend('ia').count(query) == 4500
 
 
-def test_iter_index_records_url_fgrep():
+def test_records_url_fgrep():
     backend = CdxApiBackend('cc')
     query = IndexQuery(urls=['example.com/*'], url_fgrep='/keep', url_fgrepv='robots.txt')
     captures = [
@@ -158,7 +158,7 @@ def test_iter_index_records_url_fgrep():
         _capture('http://example.com/keep/this'),
     ]
 
-    with patch.object(backend, 'iter_records', return_value=iter(captures)):
-        records = list(iter_index_records(backend, query))
+    with patch.object(backend, 'select', return_value=iter(captures)):
+        records = list(backend.records(query))
 
     assert [r['url'] for r in records] == ['http://example.com/keep/this']

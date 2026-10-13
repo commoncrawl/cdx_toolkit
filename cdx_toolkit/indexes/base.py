@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from itertools import islice
 import logging
 from typing import FrozenSet, Iterable, Iterator, Mapping
 
@@ -12,8 +13,19 @@ class UsageError(ValueError):
     """Invalid combination of command line options, reported without a traceback."""
 
 
+class QueryPlan(ABC):
+    """A query in the form of one backend, e.g. SQL text or SURT prefixes; what --dry-run shows."""
+
+    @abstractmethod
+    def describe(self) -> str:
+        raise NotImplementedError  # pragma: no cover
+
+
 class IndexBackend(ABC):
-    """An index that can be queried for captures (CDX API, and later CDX files, Athena, DuckDB)."""
+    """An index that can be queried for captures: the CDX API, CDX files, or the columnar index (Athena, DuckDB).
+
+    A query (IndexQuery, the same for every backend) becomes the backend's plan (plan()), which is run by
+    select() and count(), or shown by explain()."""
 
     name: str = ''
     supported_options: FrozenSet[str] = frozenset()
@@ -29,10 +41,15 @@ class IndexBackend(ABC):
             raise UsageError(f'--limit must be at least 1, not {query.limit}')
 
     @abstractmethod
-    def iter_records(self, query: IndexQuery) -> Iterator[Mapping]:
+    def plan(self, query: IndexQuery) -> QueryPlan:
+        """The query in the form of this backend."""
+        raise NotImplementedError  # pragma: no cover
+
+    @abstractmethod
+    def select(self, query: IndexQuery) -> Iterator[Mapping]:
         """Yield the selected captures as mappings with CDX field names (url, timestamp, filename, ...).
 
-        Backends apply --limit themselves, so it can be pushed down to the index."""
+        A backend can push --limit down to the index, but need not stop at it (see records())."""
         raise NotImplementedError  # pragma: no cover
 
     @abstractmethod
@@ -41,15 +58,13 @@ class IndexBackend(ABC):
         client-side --url-fgrep/--url-fgrepv, which cannot be combined with --count)."""
         raise NotImplementedError  # pragma: no cover
 
-    @abstractmethod
+    def records(self, query: IndexQuery) -> Iterator[Mapping]:
+        """The captures of the query: at most --limit, then filtered by --url-fgrep/--url-fgrepv (client-side)."""
+        return filter_by_url(islice(self.select(query), query.limit), query.url_fgrep, query.url_fgrepv)
+
     def explain(self, query: IndexQuery) -> str:
         """Describe what would be queried (--dry-run), without querying the index."""
-        raise NotImplementedError  # pragma: no cover
-
-
-def iter_index_records(backend: IndexBackend, query: IndexQuery) -> Iterator[Mapping]:
-    """Query a backend and apply the client-side filters that work for every backend."""
-    return filter_by_url(backend.iter_records(query), query.url_fgrep, query.url_fgrepv)
+        return self.plan(query).describe()
 
 
 def filter_by_url(records: Iterable[Mapping], url_fgrep=None, url_fgrepv=None) -> Iterator[Mapping]:

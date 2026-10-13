@@ -5,10 +5,9 @@ import shutil
 import pytest
 
 from cdx_toolkit.cli import main
-from cdx_toolkit.indexes import IndexQuery, UsageError, iter_index_records
-from cdx_toolkit.indexes.backends.cdx_files import (
-    CdxFilesBackend, domain_entry_to_surts, load_url_patterns, url_pattern_to_surts,
-)
+from cdx_toolkit.indexes import IndexQuery, UsageError
+from cdx_toolkit.indexes.backends.cdx_files import CdxFilesBackend, load_url_patterns
+from cdx_toolkit.indexes.patterns import domain_entry_to_surts, url_pattern_to_surts
 from cdx_toolkit.record_io import write_records
 
 from tests.conftest import TEST_DATA_PATH
@@ -52,7 +51,7 @@ def test_select_by_hostname_domain_and_url():
     assert backend.count(IndexQuery(urls=['biodiv.mnhn.fr/fr/taxonomy*'])) == count_lines('fr,mnhn,biodiv)/fr/taxonomy')
 
     exact_key = LINES[0].split(' ')[0]
-    records = list(backend.iter_records(IndexQuery(urls=[json.loads(LINES[0].split(' ', 2)[2])['url']])))
+    records = list(backend.records(IndexQuery(urls=[json.loads(LINES[0].split(' ', 2)[2])['url']])))
     assert {r['urlkey'] for r in records} == {exact_key}
 
 
@@ -61,7 +60,7 @@ def test_time_range_fgrep_and_limit():
     query = IndexQuery(domains=['missiondefrance.fr'], from_ts='20240716', to='20240716')
     assert backend.count(query) == count_lines('fr,missiondefrance,', day='20240716')
 
-    records = list(iter_index_records(backend, IndexQuery(domains=['mnhn.fr'], url_fgrep='/taxonomy/', limit=5)))
+    records = list(backend.records(IndexQuery(domains=['mnhn.fr'], url_fgrep='/taxonomy/', limit=5)))
     assert 0 < len(records) <= 5
     assert all('/taxonomy/' in r['url'] and r['urlkey'].startswith('fr,mnhn,biodiv)') for r in records)
     assert set(records[0]) >= {'urlkey', 'timestamp', 'url', 'filename', 'offset', 'length'}
@@ -75,9 +74,9 @@ def test_limit_applies_before_the_url_filters(tmp_path, capsys):
     ))
     backend = CdxFilesBackend(str(path))
     query = IndexQuery(domains=['example.com'], limit=1, url_fgrep='keep')
-    assert list(iter_index_records(backend, query)) == []
+    assert list(backend.records(query)) == []
     query.url_fgrep, query.url_fgrepv = None, 'drop'
-    assert list(iter_index_records(backend, query)) == []
+    assert list(backend.records(query)) == []
     assert backend.count(IndexQuery(domains=['example.com'], limit=1)) == 1
     assert backend.count(IndexQuery(domains=['example.com'])) == 2
 
