@@ -24,10 +24,10 @@ previously_seen_hostnames = {
 }
 
 
-def dns_fatal(hostname):
-    """We have a dns error, should we fail immediately or not?"""
-    if hostname not in previously_seen_hostnames:
-        return True
+def dns_fatal(hostname) -> bool:
+    """We have a dns error, should we fail immediately or not? Not for a host that worked before (the error may be
+    temporary)."""
+    return hostname not in previously_seen_hostnames
 
 
 class HostRateLimiter:
@@ -169,7 +169,7 @@ def myrequests_get(
                 or ('nodename nor servname provided, or not known' in string)  # macos
                 or ('getaddrinfo failed' in string)
             ):  # windows
-                if dns_fatal(url):
+                if dns_fatal(hostname):
                     raise ValueError('invalid hostname in url ' + url) from None
 
             if connect_errors > raise_error_after_n_errors:

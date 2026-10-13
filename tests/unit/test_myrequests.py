@@ -54,3 +54,17 @@ def test_finish_spaces_the_next_request_from_the_end_of_the_previous_one():
     with patch('cdx_toolkit.myrequests.time.time', return_value=2000.0):
         limiter.finish('example.org')
     assert limiter.reserve('example.org', 2001.0) == 2010.0
+
+
+@pytest.mark.parametrize('host, fatal', [('unknown-host.example.org', True), ('data.commoncrawl.org', False)])
+def test_dns_error_is_only_fatal_for_unknown_hosts(monkeypatch, host, fatal):
+    from cdx_toolkit import myrequests
+
+    monkeypatch.setitem(myrequests.RATE_LIMITER.intervals, host, 0)
+    error = requests.exceptions.ConnectionError('[Errno 8] nodename nor servname provided, or not known')
+    with patch('requests.get', side_effect=error) as get, pytest.raises(ValueError) as e:
+        myrequests_get(f'https://{host}/x', retry_max_sec=0.01, raise_error_after_n_errors=1)
+    if fatal:
+        assert 'invalid hostname' in str(e.value) and get.call_count == 1
+    else:
+        assert '2 failures' in str(e.value) and get.call_count == 2  # retried
