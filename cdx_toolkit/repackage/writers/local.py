@@ -3,11 +3,11 @@ import os
 
 import aiofiles
 
+from cdx_toolkit.repackage.writers import OutputFile
 
-class LocalFileWriter:
-    """Async writer for local file system using aiofiles.
 
-    Like S3ShardWriter: close() completes the file, or removes it and raises; abort() removes it."""
+class LocalOutputFile(OutputFile):
+    """A local file, written with aiofiles; abort() removes it."""
 
     def __init__(self, file_path: str, buffer_size: int = 8192, mode: str = 'wb'):
         self.file_path = file_path

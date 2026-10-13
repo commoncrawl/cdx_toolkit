@@ -14,10 +14,7 @@ from cdx_toolkit.aws import botocore_config
 from cdx_toolkit.repackage.jobs import RangeJob, RangePayload, RepackageResult
 from cdx_toolkit.repackage.readers import Readers
 from cdx_toolkit.repackage.urls import is_s3_url
-from cdx_toolkit.repackage.warc_records import (
-    get_bytes_from_warc_record, get_metadata_record_from_path, warcinfo_record_bytes,
-)
-from cdx_toolkit.repackage.writers import new_warc_writer
+from cdx_toolkit.repackage.writers.series import WarcFileSeries
 
 
 _STOP = object()
@@ -140,9 +137,7 @@ class WARCFilter:
         self.warc_version = warc_version
         self.min_part_size = min_part_size
         self.max_file_size = max_file_size
-        # Number of the next output file, given the current one (0 before the first file). The
-        # multi-process mode shares one counter across processes, so file names are final right away.
-        self.next_file_sequence = next_file_sequence or (lambda sequence: sequence + 1)
+        self.next_file_sequence = next_file_sequence  # see WarcFileSeries
 
     def filter(self) -> RepackageResult:
         """Perform the filtering process (calls async method via asyncio.run).
@@ -379,38 +374,12 @@ class WARCFilter:
 
         return {'reader_id': reader_id, 'stats': tracker.get_stats(), 'failed': failed}
 
-    async def write_metadata_records(self, writer, warcinfo_id: str) -> int:
-        """Write WARC metadata records based on paths"""
-        records_size = 0
-        records_count = 0
-
-        logger.info(f'Writing {len(self.write_paths_as_metadata_records)} metadata records to WARC ... ')
-
-        # Metadata records are written at the beginning each WARC file.
-        for i, resource_record_path in enumerate(self.write_paths_as_metadata_records):
-            logger.info(f'Writing metadata record from {resource_record_path} ...')
-            record = get_metadata_record_from_path(
-                file_path=resource_record_path,
-                warcinfo_id=warcinfo_id,
-            )
-            record_data = get_bytes_from_warc_record(record, warc_version=self.warc_version, gzip=self.gzip)
-            await writer.write(record_data)
-
-            # Keep track but do not rotate resource records
-            records_size += len(record_data)
-            records_count += 1
-
-        logger.info(f'Metadata records added: {records_count}')
-
-        return records_size
-
     async def write_warc_records(
         self,
         warc_records_queue: asyncio.Queue,
         s3_client=None,
     ) -> dict:
-        """Write WARC records. The single writer owns the output WARC (one shard per
-        process) and appends ranges to it, rotating by --size when set.
+        """Write the WARC records to the series of output files (one series per process), rotating at --size.
 
         Args:
             warc_records_queue: Queue to read RangePayload objects from.
@@ -419,19 +388,26 @@ class WARCFilter:
         Returns:
             dict: Statistics dictionary with throughput stats.
         """
-        # File rotation tracking; the first file is only created with the first record, so
-        # no WARC file is written without records
-        writer = None
-        current_file_sequence = 0
-        current_file_size = 0
-        records_in_file = 0
-
+        series = WarcFileSeries(
+            self.prefix_path,
+            self.writer_info,
+            writer_subprefix=self.writer_subprefix,
+            metadata_paths=self.write_paths_as_metadata_records,
+            warc_version=self.warc_version,
+            gzip=self.gzip,
+            max_file_size=self.max_file_size,
+            next_file_sequence=self.next_file_sequence,
+            s3_client=s3_client,
+            min_part_size=self.min_part_size,
+            max_attempts=self.max_attempts,
+            base_backoff_seconds=self.base_backoff_seconds,
+        )
         tracker = ThroughputTracker()
         tracker.start()
         counter = 0
 
-        # Response records; any failure is fatal, also when closing a file: the current file is aborted
-        # (removed, or its S3 upload aborted), the files completed before stay
+        # any failure is fatal, also when closing a file: the current file is aborted (removed, or its S3 upload
+        # aborted), the files completed before stay
         try:
             while True:
                 item = await warc_records_queue.get()
@@ -447,40 +423,13 @@ class WARCFilter:
                     break
                 assert isinstance(item, RangePayload)
                 counter += 1
-
-                if writer is None:
-                    # first file, with header and metadata records
-                    current_file_sequence = self.next_file_sequence(0)
-                    writer, current_file_size = await self.start_file(current_file_sequence, s3_client)
-                    records_in_file = 0
-                elif records_in_file and self.max_file_size and \
-                        current_file_size + len(item.data) > self.max_file_size:
-                    # rotate due to the size limit (a file gets at least one record, also if the record is
-                    # larger than the size limit); the finished file is not aborted if starting the next fails
-                    await writer.close()
-                    writer = None
-                    current_file_sequence = self.next_file_sequence(current_file_sequence)
-                    writer, current_file_size = await self.start_file(current_file_sequence, s3_client)
-                    records_in_file = 0
-                    logger.info(f'Rotated to new WARC file sequence {current_file_sequence} due to size limit')
-
-                # Write actual response record
-                await writer.write(item.data)
-                records_in_file += 1
-                current_file_size += len(item.data)
+                await series.write(item.data)
                 tracker.add(bytes_count=len(item.data), records_count=item.job.records_count)
-
-                # Log progress every N items
                 self.log_writer(counter=counter, tracker=tracker)
-
-            if writer is not None:
-                await writer.close()
+            await series.close()
         except BaseException:
-            # also if closing failed: a writer that cannot close removes its file (or aborts its upload) itself,
-            # and abort() is a no-op then
             logger.error('WARC writer failed, aborting the current WARC file')
-            if writer is not None:
-                await writer.abort()
+            await series.abort()
             raise
 
         return {'stats': tracker.get_stats()}
@@ -508,31 +457,3 @@ class WARCFilter:
                 stats['total_bytes'] / (1024 * 1024),
                 stats['mb_per_sec'],
             )
-
-    async def start_file(self, sequence: int, s3_client=None):
-        """Start a new WARC file with its warcinfo record (and the metadata records, if any); if that fails, the
-        file is aborted.
-
-        Returns the writer and the number of bytes written."""
-        writer, warc_file_name = new_warc_writer(
-            sequence,
-            self.prefix_path,
-            max_attempts=self.max_attempts,
-            base_backoff_seconds=self.base_backoff_seconds,
-            min_part_size=self.min_part_size,
-            writer_subprefix=self.writer_subprefix,
-            gzip=self.gzip,
-            s3_client=s3_client,
-        )
-        logger.debug('Starting WARC file %s', warc_file_name)
-        try:
-            await writer.start()
-            header, warcinfo_id = warcinfo_record_bytes(warc_file_name, self.writer_info, self.warc_version, self.gzip)
-            await writer.write(header)
-            file_size = len(header)
-            if self.write_paths_as_metadata_records:
-                file_size += await self.write_metadata_records(writer, warcinfo_id=warcinfo_id)
-        except BaseException:
-            await writer.abort()
-            raise
-        return writer, file_size

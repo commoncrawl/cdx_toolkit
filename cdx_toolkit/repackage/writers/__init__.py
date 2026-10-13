@@ -1,34 +1,45 @@
 '''
-The writers of output files: a local file (local.py) or an S3 object written with a multipart upload (s3.py).
+The output files of cdxt repackage: a local file (local.py) or an S3 object written with a multipart upload
+(s3.py), and the series of WARC files they make up (series.py).
 '''
-import os
-from typing import Optional, Tuple, Union
+from abc import ABC, abstractmethod
 
 from cdx_toolkit.repackage.urls import is_s3_url, parse_s3_uri
-from cdx_toolkit.repackage.writers.local import LocalFileWriter
-from cdx_toolkit.repackage.writers.s3 import S3ShardWriter
-from cdx_toolkit.repackage.writers.series import generate_warc_filename
 
 
-def new_warc_writer(
-    sequence: int,
-    output_path_prefix: str,
-    max_attempts: int,
-    base_backoff_seconds: float,
-    min_part_size: int,
-    writer_subprefix: Optional[str] = None,
-    gzip: bool = False,
-    s3_client=None,
-) -> Tuple[Union[S3ShardWriter, LocalFileWriter], str]:
-    """A new (not started) writer of a WARC file, local or S3, and the file's name (for the warcinfo record).
+class OutputFile(ABC):
+    """One output file, written in one go: start(), write()..., then close().
 
-    Both writers have the same life cycle: start(), write()..., then close(), which completes the file, or
-    abort(), which removes it (or aborts its upload); a writer that cannot close aborts itself."""
-    if is_s3_url(output_path_prefix):
-        dest_bucket, dest_prefix = parse_s3_uri(output_path_prefix)
-        key = generate_warc_filename(dest_prefix, sequence=sequence, writer_subprefix=writer_subprefix, gzip=gzip)
-        writer = S3ShardWriter(s3_client, key, dest_bucket, min_part_size, max_attempts, base_backoff_seconds)
-        return writer, key.split('/')[-1]
+    close() completes the file; if that fails, the file aborts itself (and close() raises). abort() removes the
+    incomplete file (or aborts its upload), also after a failed start(); it can be called more than once."""
 
-    path = generate_warc_filename(output_path_prefix, sequence=sequence, writer_subprefix=writer_subprefix, gzip=gzip)
-    return LocalFileWriter(file_path=path), os.path.basename(path)  # with backslashes on Windows
+    @abstractmethod
+    async def start(self) -> None:
+        raise NotImplementedError  # pragma: no cover
+
+    @abstractmethod
+    async def write(self, data: bytes) -> None:
+        raise NotImplementedError  # pragma: no cover
+
+    @abstractmethod
+    async def close(self) -> None:
+        raise NotImplementedError  # pragma: no cover
+
+    @abstractmethod
+    async def abort(self) -> None:
+        raise NotImplementedError  # pragma: no cover
+
+
+def open_output_file(path: str, s3_client=None, min_part_size: int = 5 * 1024 * 1024, max_attempts: int = 5,
+                     base_backoff_seconds: float = 0.5) -> OutputFile:
+    """A new (not started) output file: an S3 object for s3://bucket/key (written with `s3_client`), else a local
+    file."""
+    if is_s3_url(path):
+        from cdx_toolkit.repackage.writers.s3 import S3OutputFile
+
+        bucket, key = parse_s3_uri(path)
+        return S3OutputFile(s3_client, bucket, key, min_part_size, max_attempts, base_backoff_seconds)
+
+    from cdx_toolkit.repackage.writers.local import LocalOutputFile
+
+    return LocalOutputFile(path)

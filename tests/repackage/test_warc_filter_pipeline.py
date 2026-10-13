@@ -20,7 +20,7 @@ from cdx_toolkit.repackage import multiprocess
 from cdx_toolkit.repackage.jobs import RangeJob, RepackageResult
 from cdx_toolkit.repackage.readers.http import HttpRangeReader, RangeError
 from cdx_toolkit.repackage.readers.s3 import S3RangeReader
-from cdx_toolkit.repackage.writers.local import LocalFileWriter
+from cdx_toolkit.repackage.writers.local import LocalOutputFile
 from cdx_toolkit.repackage.jobs import RecordsSource
 from cdx_toolkit.repackage.pipeline import WARCFilter
 from tests.conftest import InlineExecutor
@@ -87,7 +87,7 @@ def test_invalid_range_responses_are_not_written(tmp_path, response):
 def test_a_slow_http_read_does_not_block_the_other_readers_and_the_writer(tmp_path):
     """The first read is held until the second capture has been written."""
     second_written = threading.Event()
-    original_write = LocalFileWriter.write
+    original_write = LocalOutputFile.write
 
     def get(url, headers=None, **kwargs):
         if url.endswith(CAPTURES[0]['filename']):
@@ -102,7 +102,7 @@ def test_a_slow_http_read_does_not_block_the_other_readers_and_the_writer(tmp_pa
     wf = WARCFilter(source=RecordsSource(CAPTURES[:2], 'https://data.example.org', sort=False),
                     prefix_path=str(tmp_path / 'out'), writer_info={}, n_parallel_readers=2)
     with patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=get), \
-            patch.object(LocalFileWriter, 'write', write):
+            patch.object(LocalOutputFile, 'write', write):
         assert wf.filter() == RepackageResult(requested=2, written=2)
     records = response_records(glob.glob(str(tmp_path / 'out-*.warc.gz')))
     assert [r.rec_headers.get_header('WARC-Target-URI') for r in records] == [CAPTURES[1]['url'], CAPTURES[0]['url']]
@@ -113,7 +113,7 @@ def test_writer_error_stops_the_pipeline_and_removes_the_file(tmp_path):
                     writer_info={}, max_file_size=1)
     writes = []
 
-    original_write = LocalFileWriter.write
+    original_write = LocalOutputFile.write
 
     async def failing_write(self, data):
         writes.append(data)
@@ -122,7 +122,7 @@ def test_writer_error_stops_the_pipeline_and_removes_the_file(tmp_path):
         await original_write(self, data)
 
     with patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get), \
-            patch.object(LocalFileWriter, 'write', failing_write), pytest.raises(OSError, match='disk full'):
+            patch.object(LocalOutputFile, 'write', failing_write), pytest.raises(OSError, match='disk full'):
         wf.filter()
     # the first file is complete, the second was removed
     assert [os.path.basename(p) for p in glob.glob(str(tmp_path / 'out-*'))] == ['out-001.warc.gz']
@@ -136,7 +136,7 @@ def test_close_error_stops_the_pipeline_and_removes_the_file(tmp_path, failing_c
     wf = WARCFilter(source=RecordsSource(CAPTURES[:2], 'https://data.example.org'),
                     prefix_path=str(tmp_path / 'out'), writer_info={}, max_file_size=1)
     flushes = []
-    original_flush = LocalFileWriter._flush
+    original_flush = LocalOutputFile._flush
 
     async def failing_flush(self):
         flushes.append(self.file_path)
@@ -145,7 +145,7 @@ def test_close_error_stops_the_pipeline_and_removes_the_file(tmp_path, failing_c
         await original_flush(self)
 
     with patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get), \
-            patch.object(LocalFileWriter, '_flush', failing_flush), pytest.raises(OSError, match='disk full'):
+            patch.object(LocalOutputFile, '_flush', failing_flush), pytest.raises(OSError, match='disk full'):
         wf.filter()
     assert [os.path.basename(p) for p in glob.glob(str(tmp_path / 'out-*'))] == expected_files
 

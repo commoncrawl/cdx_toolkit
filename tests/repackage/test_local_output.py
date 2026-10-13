@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from cdx_toolkit.repackage.writers.local import LocalFileWriter
+from cdx_toolkit.repackage.writers.local import LocalOutputFile
 
 
 def run(coro):
@@ -15,7 +15,7 @@ def test_writes_buffered_and_byte_exact(tmp_path):
     chunks = [bytes(range(256)), b'small', b'x' * 20000, b'', b'\x00\xff' * 10]
 
     async def write():
-        writer = LocalFileWriter(str(path), buffer_size=1024)
+        writer = LocalOutputFile(str(path), buffer_size=1024)
         await writer.start()
         await writer.write(chunks[1])
         assert path.read_bytes() == b''  # buffered
@@ -30,7 +30,7 @@ def test_writes_buffered_and_byte_exact(tmp_path):
 
 
 def test_close_without_start(tmp_path):
-    run(LocalFileWriter(str(tmp_path / 'out')).close())
+    run(LocalOutputFile(str(tmp_path / 'out')).close())
     assert not (tmp_path / 'out').exists()
 
 
@@ -38,7 +38,7 @@ def test_abort_removes_the_file(tmp_path):
     path = tmp_path / 'out.warc.gz'
 
     async def write_and_abort():
-        writer = LocalFileWriter(str(path), buffer_size=4)
+        writer = LocalOutputFile(str(path), buffer_size=4)
         await writer.start()
         await writer.write(b'incomplete')
         await writer.abort()
@@ -46,17 +46,17 @@ def test_abort_removes_the_file(tmp_path):
 
     run(write_and_abort())
     assert not path.exists()
-    run(LocalFileWriter(str(path)).abort())  # without start
+    run(LocalOutputFile(str(path)).abort())  # without start
 
 
 def test_start_fails_without_the_directory(tmp_path):
     with pytest.raises(FileNotFoundError):
-        run(LocalFileWriter(os.path.join(str(tmp_path), 'missing', 'out')).start())
+        run(LocalOutputFile(os.path.join(str(tmp_path), 'missing', 'out')).start())
 
 
 def test_close_removes_the_file_if_the_last_write_fails(tmp_path):
     async def close_with_failing_flush():
-        writer = LocalFileWriter(str(tmp_path / 'out'))
+        writer = LocalOutputFile(str(tmp_path / 'out'))
         await writer.start()
         await writer.write(b'x')
         handle = writer.file_handle

@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from cdx_toolkit.repackage.writers.s3 import S3ShardWriter, mpu_abort
+from cdx_toolkit.repackage.writers.s3 import S3OutputFile, mpu_abort
 
 
 def test_mpu_abort_success():
@@ -73,8 +73,7 @@ class FakeS3:
 
 
 def make_writer(s3):
-    writer = S3ShardWriter(s3, 'out.warc.gz', 'bucket', min_part_size=4, max_attempts=2,
-                           base_backoff_seconds=0)
+    writer = S3OutputFile(s3, 'bucket', 'out.warc.gz', min_part_size=4, max_attempts=2, base_backoff_seconds=0)
     writer.upload_id = 'upload-id'
     return writer
 
