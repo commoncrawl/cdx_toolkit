@@ -1,14 +1,9 @@
 from argparse import Namespace, RawDescriptionHelpFormatter
 import logging
-import os
 import time
-from typing import Optional
 
-from cdx_toolkit.indexes import UsageError
-from cdx_toolkit.record_io import (
-    FORMAT_CHOICES, canonical_format, check_glob, format_from_path, import_pyarrow, read_records,
-)
-from cdx_toolkit.utils import get_version
+from cdx_toolkit.record_io import FORMAT_CHOICES
+from cdx_toolkit.repackage import repackage
 
 from .common import IncompleteError, add_verbose_arg, parse_size, positive_int
 
@@ -114,43 +109,26 @@ def add_parser(subparsers):
     return parser
 
 
-def build_warcinfo(args: Namespace, cmdline: str) -> dict:
-    ispartof = args.is_part_of
-    if not ispartof:
-        ispartof = args.prefix
-        if args.subprefix:
-            ispartof += '-' + args.subprefix
-
-    info = {
-        'software': 'pypi_cdx_toolkit/' + get_version(),
-        'isPartOf': ispartof,
-        'description': args.description or 'warc extraction generated with: ' + cmdline,
-        'format': 'WARC file version 1.0',  # todo: if we directly read a warc, have this match the warc
-    }
-    if args.creator:
-        info['creator'] = args.creator
-    if args.operator:
-        info['operator'] = args.operator
-    return info
-
-
 def run(args: Namespace, cmdline: str):
-    index_format = None if args.index_format == 'auto' else canonical_format(args.index_format)
-    try:
-        check_glob(args.input)
-    except ValueError as e:
-        raise UsageError(str(e)) from None
-    if index_format == 'parquet' or (index_format is None and format_from_path(args.input) == 'parquet'):
-        try:
-            import_pyarrow()
-        except RuntimeError as e:
-            raise UsageError(str(e)) from None
-    check_output_is_new(args.prefix, args.subprefix)
-    records = read_records(args.input, index_format)
-    info = build_warcinfo(args, cmdline)
     start_time = time.time()
-
-    result = repackage_captures(args, records, info)
+    result = repackage(
+        args.input,
+        args.prefix,
+        subprefix=args.subprefix,
+        size=args.size,
+        warc_download_prefix=args.warc_download_prefix,
+        wb=args.wb,
+        processes=args.processes,
+        parallel_readers=args.parallel_readers,
+        metadata_records=args.add_metadata_record,
+        sort=not args.no_sort,
+        log_every_n=args.log_every_n,
+        creator=args.creator,
+        operator=args.operator,
+        is_part_of=args.is_part_of,
+        description=args.description or 'warc extraction generated with: ' + cmdline,
+        index_format=args.index_format,
+    )
 
     LOGGER.info('wrote %d of %d captures to WARC files (%d failed) in %.1f seconds',
                 result.written, result.requested, result.failed, time.time() - start_time)
@@ -159,70 +137,3 @@ def run(args: Namespace, cmdline: str):
             f'{result.failed} of {result.requested} captures could not be fetched (see the log), '
             f'{result.written} were written'
         )
-
-
-def check_output_is_new(prefix: str, subprefix: Optional[str]) -> None:
-    """Every run numbers its files from the start: never overwrite (or mix with) the files of an earlier run, with
-    or without --wb."""
-    from cdx_toolkit.repackage.writers.series import existing_warc_files
-
-    existing = existing_warc_files(prefix, subprefix)
-    if existing:
-        raise UsageError(
-            f'{len(existing)} WARC file(s) with this --prefix/--subprefix exist already, e.g. {existing[0]}; '
-            'use another prefix or subprefix, or remove them'
-        )
-
-
-def repackage_captures(args: Namespace, records, info: dict):
-    """Copy the WARC records byte-for-byte, or replay them from a wayback machine with --wb, with the async
-    repackager (optionally multi-process)."""
-    import fsspec
-
-    from cdx_toolkit.repackage.urls import is_hf_url
-    from cdx_toolkit.repackage.jobs import MissingWarcLocation, RecordsSource, WaybackSource
-    try:
-        if args.wb:
-            # the minimum interval between requests to the wayback machine only holds within a process
-            if args.processes > 1:
-                raise UsageError('--processes cannot be used with --wb')
-            source = WaybackSource(records, args.wb)
-        else:
-            source = RecordsSource(records, args.warc_download_prefix, sort=not args.no_sort)
-
-        # make sure the output directory exists
-        prefix_fs, prefix_fs_path = fsspec.url_to_fs(args.prefix)
-        prefix_fs.makedirs(prefix_fs._parent(prefix_fs_path), exist_ok=True)
-
-        # The WARC writer supports local and S3 output; hf:// output is staged locally by the multi-process mode.
-        if args.processes > 1 or is_hf_url(args.prefix):
-            from cdx_toolkit.repackage.multiprocess import run_multiprocess_repackage
-
-            return run_multiprocess_repackage(
-                source=source,
-                n_processes=args.processes,
-                readers_per_process=args.parallel_readers,
-                prefix_path=args.prefix,
-                writer_info=info,
-                writer_subprefix=args.subprefix,
-                write_paths_as_metadata_records=args.add_metadata_record,
-                log_every_n=args.log_every_n,
-                max_attempts=5,
-                uvloop=os.environ.get('CDXT_UVLOOP') == '1',
-                max_file_size=args.size,
-            )
-
-        from cdx_toolkit.repackage.repackager import Repackager
-
-        return Repackager(
-            source=source,
-            prefix_path=args.prefix,
-            writer_info=info,
-            writer_subprefix=args.subprefix,
-            write_paths_as_metadata_records=args.add_metadata_record,
-            log_every_n=args.log_every_n,
-            n_parallel_readers=args.parallel_readers,
-            max_file_size=args.size,
-        ).run()
-    except MissingWarcLocation as e:
-        raise UsageError(str(e))

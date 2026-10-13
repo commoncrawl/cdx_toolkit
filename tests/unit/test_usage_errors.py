@@ -49,7 +49,7 @@ def test_usage_errors(capsys, args, error):
 )
 def test_parquet_without_pyarrow(capsys, command):
     with patch('cdx_toolkit.cli.index.import_pyarrow', side_effect=RuntimeError('needs pyarrow')), \
-            patch('cdx_toolkit.cli.repackage.import_pyarrow', side_effect=RuntimeError('needs pyarrow')):
+            patch('cdx_toolkit.record_io.import_pyarrow', side_effect=RuntimeError('needs pyarrow')):
         with pytest.raises(SystemExit):
             main(command)
     assert 'needs pyarrow' in capsys.readouterr().err
