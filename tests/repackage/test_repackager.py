@@ -1,10 +1,11 @@
-"""The WARC fetch/write pipeline end to end without network: fake HTTP and HF reads, in-process "processes"."""
+"""The Repackager pipeline end to end without network: fake HTTP and HF reads, in-process "processes"."""
 import asyncio
 import contextlib
 import glob
 import io
 import gzip
 import itertools
+import logging
 import os
 import threading
 import time
@@ -22,7 +23,7 @@ from cdx_toolkit.repackage.readers.http import HttpRangeReader, RangeError
 from cdx_toolkit.repackage.readers.s3 import S3RangeReader
 from cdx_toolkit.repackage.writers.local import LocalOutputFile
 from cdx_toolkit.repackage.jobs import RecordsSource
-from cdx_toolkit.repackage.pipeline import WARCFilter
+from cdx_toolkit.repackage.repackager import Repackager, ThroughputTracker
 from tests.conftest import InlineExecutor
 from tests.fake_warc_server import FakeWarcServer
 from tests.conftest import requires_aioboto3
@@ -58,10 +59,11 @@ def test_failed_captures_are_counted_and_the_others_written(tmp_path):
             raise ConnectionError('network down')
         return fake_get(url, headers)
 
-    wf = WARCFilter(source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'),
-                    writer_info={})
+    repackager = Repackager(
+        source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'), writer_info={},
+    )
     with patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=flaky_get):
-        assert wf.filter() == RepackageResult(requested=4, written=3, failed=1)
+        assert repackager.run() == RepackageResult(requested=4, written=3, failed=1)
     assert len(response_records(glob.glob(str(tmp_path / 'out-*.warc.gz')))) == 3
 
 
@@ -77,10 +79,11 @@ def test_invalid_range_responses_are_not_written(tmp_path, response):
     if response == 'wrong-range':
         response = Mock(status_code=206, headers={'Content-Range': f'bytes {offset + 1}-{offset + length}/9999'},
                         content=b'x' * length)
-    wf = WARCFilter(source=RecordsSource([capture], 'https://data.example.org'), prefix_path=str(tmp_path / 'out'),
-                    writer_info={})
+    repackager = Repackager(
+        source=RecordsSource([capture], 'https://data.example.org'), prefix_path=str(tmp_path / 'out'), writer_info={},
+    )
     with patch('cdx_toolkit.repackage.readers.http.myrequests_get', return_value=response):
-        assert wf.filter() == RepackageResult(requested=1, written=0, failed=1)
+        assert repackager.run() == RepackageResult(requested=1, written=0, failed=1)
     assert glob.glob(str(tmp_path / 'out-*')) == []
 
 
@@ -99,18 +102,22 @@ def test_a_slow_http_read_does_not_block_the_other_readers_and_the_writer(tmp_pa
         if b'https://example.com/1' in gzip.decompress(data):
             second_written.set()
 
-    wf = WARCFilter(source=RecordsSource(CAPTURES[:2], 'https://data.example.org', sort=False),
-                    prefix_path=str(tmp_path / 'out'), writer_info={}, n_parallel_readers=2)
+    repackager = Repackager(
+        source=RecordsSource(CAPTURES[:2], 'https://data.example.org', sort=False), prefix_path=str(tmp_path / 'out'),
+        writer_info={}, n_parallel_readers=2,
+    )
     with patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=get), \
             patch.object(LocalOutputFile, 'write', write):
-        assert wf.filter() == RepackageResult(requested=2, written=2)
+        assert repackager.run() == RepackageResult(requested=2, written=2)
     records = response_records(glob.glob(str(tmp_path / 'out-*.warc.gz')))
     assert [r.rec_headers.get_header('WARC-Target-URI') for r in records] == [CAPTURES[1]['url'], CAPTURES[0]['url']]
 
 
 def test_writer_error_stops_the_pipeline_and_removes_the_file(tmp_path):
-    wf = WARCFilter(source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'),
-                    writer_info={}, max_file_size=1)
+    repackager = Repackager(
+        source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'), writer_info={},
+        max_file_size=1,
+    )
     writes = []
 
     original_write = LocalOutputFile.write
@@ -123,7 +130,7 @@ def test_writer_error_stops_the_pipeline_and_removes_the_file(tmp_path):
 
     with patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get), \
             patch.object(LocalOutputFile, 'write', failing_write), pytest.raises(OSError, match='disk full'):
-        wf.filter()
+        repackager.run()
     # the first file is complete, the second was removed
     assert [os.path.basename(p) for p in glob.glob(str(tmp_path / 'out-*'))] == ['out-001.warc.gz']
 
@@ -133,8 +140,10 @@ def test_writer_error_stops_the_pipeline_and_removes_the_file(tmp_path):
     (2, ['out-001.warc.gz']),  # the final close: the last file is removed, the complete first one stays
 ])
 def test_close_error_stops_the_pipeline_and_removes_the_file(tmp_path, failing_close, expected_files):
-    wf = WARCFilter(source=RecordsSource(CAPTURES[:2], 'https://data.example.org'),
-                    prefix_path=str(tmp_path / 'out'), writer_info={}, max_file_size=1)
+    repackager = Repackager(
+        source=RecordsSource(CAPTURES[:2], 'https://data.example.org'), prefix_path=str(tmp_path / 'out'),
+        writer_info={}, max_file_size=1,
+    )
     flushes = []
     original_flush = LocalOutputFile._flush
 
@@ -146,15 +155,17 @@ def test_close_error_stops_the_pipeline_and_removes_the_file(tmp_path, failing_c
 
     with patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get), \
             patch.object(LocalOutputFile, '_flush', failing_flush), pytest.raises(OSError, match='disk full'):
-        wf.filter()
+        repackager.run()
     assert [os.path.basename(p) for p in glob.glob(str(tmp_path / 'out-*'))] == expected_files
 
 
 def test_rotation_by_size(tmp_path):
-    wf = WARCFilter(source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'),
-                    writer_info={}, max_file_size=1)
+    repackager = Repackager(
+        source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'), writer_info={},
+        max_file_size=1,
+    )
     with patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get):
-        assert wf.filter().written == 4
+        assert repackager.run().written == 4
     paths = sorted(glob.glob(str(tmp_path / 'out-*.warc.gz')))
     assert [os.path.basename(p) for p in paths] == [f'out-00{i}.warc.gz' for i in range(1, 5)]
     assert all(len(response_records([p])) == 1 for p in paths)
@@ -180,11 +191,12 @@ def test_cancellation_with_a_full_queue_and_a_blocked_reader(tmp_path):
             await asyncio.Event().wait()  # blocks forever
         return b'x'
 
-    wf = WARCFilter(source=EndlessSource(), prefix_path=str(tmp_path / 'out'), writer_info={},
-                    range_jobs_queue_size=2)
+    repackager = Repackager(
+        source=EndlessSource(), prefix_path=str(tmp_path / 'out'), writer_info={}, range_jobs_queue_size=2,
+    )
 
     async def run():
-        task = asyncio.create_task(wf.filter_async())
+        task = asyncio.create_task(repackager.run_async())
         while len(reads) < 2:
             await asyncio.sleep(0.01)
         await asyncio.sleep(0.2)  # the queue fills up, the producer waits
@@ -264,10 +276,12 @@ def test_cancelled_http_read_stops_retrying(monkeypatch):
 
 
 def test_hf_reads_use_the_hf_reader(tmp_path):
-    wf = WARCFilter(source=RecordsSource(CAPTURES, 'hf://buckets/commoncrawl/commoncrawl'),
-                    prefix_path=str(tmp_path / 'out'), writer_info={})
+    repackager = Repackager(
+        source=RecordsSource(CAPTURES, 'hf://buckets/commoncrawl/commoncrawl'), prefix_path=str(tmp_path / 'out'),
+        writer_info={},
+    )
     with patch('cdx_toolkit.repackage.readers.hf.make_hf_reader', fake_make_hf_reader):
-        assert wf.filter().written == 4
+        assert repackager.run().written == 4
     records = response_records(glob.glob(str(tmp_path / 'out-*.warc.gz')))
     assert sorted(r.rec_headers.get_header('WARC-Target-URI') for r in records) == sorted(c['url'] for c in CAPTURES)
 
@@ -277,10 +291,10 @@ def test_uvloop(monkeypatch, caplog, uvloop_installed):
     monkeypatch.setenv('CDXT_UVLOOP', '1')
     fake_uvloop = Mock(run=asyncio.run) if uvloop_installed else None
     monkeypatch.setitem(__import__('sys').modules, 'uvloop', fake_uvloop)
-    wf = WARCFilter(source=RecordsSource([], None), prefix_path='/nonexistent/out', writer_info={})
+    repackager = Repackager(source=RecordsSource([], None), prefix_path='/nonexistent/out', writer_info={})
 
     with caplog.at_level('INFO'):
-        assert wf.filter() == RepackageResult()
+        assert repackager.run() == RepackageResult()
     assert ('Using uvloop event loop' if uvloop_installed else 'uvloop is not installed') in caplog.text
 
 
@@ -351,7 +365,7 @@ def test_full_s3_and_hf_filenames_get_their_readers(tmp_path, processes):
             patch.object(multiprocess, 'ProcessPoolExecutor', InlineExecutor):
         session.return_value.client.return_value = FakeS3Client()
         if processes == 1:
-            result = WARCFilter(source=source, prefix_path=str(tmp_path / 'out'), writer_info={}).filter()
+            result = Repackager(source=source, prefix_path=str(tmp_path / 'out'), writer_info={}).run()
         else:
             result = multiprocess.run_multiprocess_repackage(
                 source=source, n_processes=processes, readers_per_process=1, prefix_path=str(tmp_path / 'out'),
@@ -372,8 +386,10 @@ def test_s3_output_with_metadata_records(tmp_path):
     with patch('aioboto3.Session') as session, \
             patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get):
         session.return_value.client.return_value = s3
-        result = WARCFilter(source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path='s3://bucket/out',
-                            writer_info={}, write_paths_as_metadata_records=[str(metadata)]).filter()
+        result = Repackager(
+            source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path='s3://bucket/out', writer_info={},
+            write_paths_as_metadata_records=[str(metadata)],
+        ).run()
     assert result.written == 4
     data = s3.objects['s3://bucket/out-001.warc.gz']
     records = [(r.rec_type, r.content_stream().read()) for r in ArchiveIterator(io.BytesIO(data))]
@@ -382,11 +398,13 @@ def test_s3_output_with_metadata_records(tmp_path):
 
 
 def test_failing_metadata_record_removes_the_file(tmp_path):
-    wf = WARCFilter(source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'),
-                    writer_info={}, write_paths_as_metadata_records=[str(tmp_path / 'missing.txt')])
+    repackager = Repackager(
+        source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'), writer_info={},
+        write_paths_as_metadata_records=[str(tmp_path / 'missing.txt')],
+    )
     with patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get), \
             pytest.raises(FileNotFoundError):
-        wf.filter()
+        repackager.run()
     assert glob.glob(str(tmp_path / 'out-*')) == []
 
 
@@ -447,8 +465,10 @@ def test_s3_reads_retry_the_whole_transfer():
 def test_no_s3_client_without_s3(tmp_path):
     with patch('aioboto3.Session') as session, \
             patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get):
-        WARCFilter(source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'),
-                   writer_info={}).filter()
+        Repackager(
+            source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'),
+            writer_info={},
+        ).run()
     session.assert_not_called()
 
 
@@ -499,4 +519,18 @@ def test_multiprocess_repackage_keeps_the_order_of_the_source(tmp_path):
 
 def test_at_least_one_reader():
     with pytest.raises(ValueError, match='n_parallel_readers'):
-        WARCFilter(source=RecordsSource([], None), prefix_path='out', writer_info={}, n_parallel_readers=0)
+        Repackager(source=RecordsSource([], None), prefix_path='out', writer_info={}, n_parallel_readers=0)
+
+
+def test_log_progress(caplog):
+    """Progress is logged every --log-every-n items."""
+    caplog.set_level(logging.INFO, logger='cdx_toolkit.repackage.repackager')
+
+    repackager = Repackager(source=RecordsSource([], None), prefix_path='/fake/prefix', writer_info={}, log_every_n=2)
+    tracker = ThroughputTracker()
+    for _ in range(5):
+        tracker.add(bytes_count=1024 * 1024, records_count=1)
+        repackager.log_progress('WARC Reader 1', tracker)
+
+    assert caplog.text.count('WARC Reader 1: ') == 2
+    assert 'WARC Reader 1: 4 items, 4.0 MB in ' in caplog.text

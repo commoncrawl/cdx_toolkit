@@ -38,7 +38,7 @@ from typing import Dict, List, Optional, Tuple
 from cdx_toolkit.aws import configure_fsspec_s3
 from cdx_toolkit.record_io import RecordWriter, read_records
 from cdx_toolkit.repackage.jobs import RecordsSource, RepackageResult
-from cdx_toolkit.repackage.pipeline import WARCFilter
+from cdx_toolkit.repackage.repackager import Repackager
 from cdx_toolkit.repackage.urls import is_s3_url, parse_s3_uri
 from cdx_toolkit.repackage.writers.series import generate_warc_filename
 
@@ -80,7 +80,7 @@ def _run_worker(cfg: Dict) -> RepackageResult:
         os.environ['CDXT_UVLOOP'] = '1'
     # the shard is in the order of the source (sorted, unless --no-sort), streamed
     source = RecordsSource(read_records(cfg['shard'], 'jsonl'), warc_download_prefix=None, sort=False)
-    wf = WARCFilter(
+    repackager = Repackager(
         source=source,
         prefix_path=cfg['prefix_path'],
         writer_info=cfg['writer_info'],
@@ -93,7 +93,7 @@ def _run_worker(cfg: Dict) -> RepackageResult:
         max_file_size=cfg['max_file_size'],  # rotate at --size
         next_file_sequence=_next_file_sequence,
     )
-    return wf.filter()
+    return repackager.run()
 
 
 def _split_source_to_shards(source, n: int, out_dir: str) -> Tuple[List[str], List[int]]:

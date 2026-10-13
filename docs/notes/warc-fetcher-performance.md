@@ -17,27 +17,27 @@ Status legend: **[done]** implemented on this branch · **[proposed]** not yet i
 
 ## How the fetcher works today
 
-Three async stages on a single `asyncio` event loop (`cdx_toolkit/repackage/warc_filter.py`):
+Three async stages on a single `asyncio` event loop (`cdx_toolkit/repackage/repackager.py`):
 
 1. **Produce** — the source (`RecordsSource`, the captures of the index file) yields `RangeJob`s (one per WARC record:
    url + byte offset + length). The source is a *sync* generator run in a worker
-   thread (`asyncio.to_thread(drain)`, `warc_filter.py:~276`), pushing each job onto a
+   thread (`asyncio.to_thread(drain)`, `repackager.py`), pushing each job onto a
    bounded `range_jobs_queue` via `run_coroutine_threadsafe(...).result()`.
 2. **Read** — `num_readers` reader coroutines (`= --parallel`) each pull a job and do
    **one S3 `GetObject` (or HTTP GET) per job** (`read_warc_records` →
-   `RangeJob.ranged_get_bytes`, `warc_filter.py:~446`, `data_classes.py:64`). The
+   `RangeReader.read`, `readers/`). The
    payload (raw, already-gzipped WARC record bytes) is enqueued.
 3. **Write** — `num_writers` (`= num_readers/6`) writer coroutines each own one output
-   shard and append records to it (`write_warc_records`, `warc_filter.py:~497`).
+   shard and append records to it (`write_warc_records` → `WarcFileSeries.write`).
 
 Clients/config:
 
 - One shared `aioboto3` S3 read client and one write client (`get_aws_clients`,
-  `warc_filter.py:~179`); read pool sized `num_readers*3`.
-- Retries/backoff for throttling (503 SlowDown) in `with_retries` (`s3_utils.py:27`).
-- Output writers: `S3ShardWriter` (multipart upload, ≥5 MiB parts) or `LocalFileWriter`
+  `repackager.py`); read pool sized `num_readers*3`.
+- Retries/backoff for throttling (503 SlowDown) in `with_retries` (`retries.py`).
+- Output writers: `S3OutputFile` (multipart upload, ≥5 MiB parts) or `LocalOutputFile`
   (`aiofiles`); shard files keyed by `writer_id` + `sequence`
-  (`generate_warc_filename`, `warc_utils.py:67`). Records are written **verbatim** — no
+  (`generate_warc_filename`, `writers/series.py`). Records are written **verbatim** — no
   recompression.
 
 ---
@@ -51,8 +51,7 @@ Clients/config:
 - But asyncio is single-threaded: **one event loop, one OS thread, one CPU core.** All
   the *CPU* work — TLS encrypt/decrypt, HTTP framing, aiobotocore object churn, byte
   copies — is serialized on that one core. The readers **and** writers are all
-  coroutines on the same loop (`asyncio.create_task(...)`, `warc_filter.py:~321` and
-  `~334`).
+  coroutines on the same loop (`asyncio.create_task(...)`, `repackager.py`).
 - The GIL means *threads* wouldn't help CPU-bound work either. Only **multiple
   processes** use multiple cores.
 
@@ -95,11 +94,11 @@ Run a sample and watch `htop`/`mpstat` during the fetch:
 ## Writer review (why more output shards won't fix a read-bound core)
 
 - **No recompression** — records arrive already gzipped and are written verbatim
-  (`writer.write(item.data)`, `warc_filter.py:~577`). The writer adds no gzip CPU.
-- **`S3ShardWriter`** (`s3_writer.py:84`) buffers into a `bytearray`; on each ≥5 MiB
+  (`writer.write(item.data)`, `repackager.py`). The writer adds no gzip CPU.
+- **`S3OutputFile`** (`writers/s3.py`) buffers into a `bytearray`; on each ≥5 MiB
   boundary it does `buffer[:n]` (copy), `del buffer[:n]` (an O(remaining) memmove),
   `bytes(chunk)` (another copy), then `await upload_part`. Real but modest byte-copy cost.
-- **`LocalFileWriter`** (`local_writer.py`) is `aiofiles` with an 8 KiB buffer and a
+- **`LocalOutputFile`** (`writers/local.py`) is `aiofiles` with an 8 KiB buffer and a
   `flush()` per write — on a fast read stream the per-flush overhead + EBS limits are the
   more likely bottleneck (prefer writing to `s3://` on a c5n).
 - **[done] One writer per process.** Because writing is a cheap verbatim copy that one
@@ -150,12 +149,12 @@ Assume parallelism is already configured (`--parallel` high) and reads go to
    process's producer thread (CSV sort + per-row cross-thread enqueue) competes with its
    event loop for the GIL — see latent issues.
 
-4. **[done] uvloop.** Gated by `CDXT_UVLOOP=1` in `WARCFilter.filter` (`warc_filter.py`).
+4. **[done] uvloop.** Gated by `CDXT_UVLOOP=1` in `Repackager.run` (`repackager.py`).
    Measured ~+8 % single-core; stacks under multi-process.
 
 5. **[proposed] Bound coalesced read size / watch RAM.** A c5n.xlarge has 10.5 GiB;
    whole-file (~1 GB) reads × many readers will OOM. Cap superrange size and gap
-   threshold; revisit `warc_records_queue_size` (`warc_filter.py:~62`, default 200) since
+   threshold; revisit `warc_records_queue_size` (`repackager.py`, default 200) since
    each buffered payload is larger after coalescing.
 
 6. **[done] Write output to `s3://` in-region, not local EBS.** Measured: S3-direct MPU
@@ -176,14 +175,14 @@ Assume parallelism is already configured (`--parallel` high) and reads go to
 
 ### Latent issues worth noting
 
-- **HTTP path blocks the event loop.** `ranged_get_bytes`'s HTTP branch calls the
-  *synchronous* `myrequests_get(...)` without `await`/`to_thread` (`data_classes.py:~91`).
+- **HTTP path blocks the event loop.** The HTTP read (then in `RangeJob.ranged_get_bytes`) called the
+  *synchronous* `myrequests_get(...)` without `await`/`to_thread`.
   Since the default `--warc-download-prefix` is `https://data.commoncrawl.org`, the
   default fetch path serializes the "parallel" readers. On EC2, prefer `s3://commoncrawl`
   (the S3 branch is properly async); otherwise the HTTP fetch should be offloaded to a
-  thread pool / async HTTP client. **[proposed]**
+  thread pool / async HTTP client. **[done]**: `HttpRangeReader` (`readers/http.py`) runs it in a thread.
 - **Per-row cross-thread enqueue.** The producer does one
-  `run_coroutine_threadsafe(...).result()` per job (`warc_filter.py:~268`) — 1M
+  `run_coroutine_threadsafe(...).result()` per job (`repackager.py`) — 1M
   loop↔thread handoffs. Batching enqueues removes a real per-row overhead at this scale.
   **[proposed]**
 

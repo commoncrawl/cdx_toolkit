@@ -213,9 +213,9 @@ def repackage_by_warc_location(args: Namespace, records, info: dict):
                 max_file_size=args.size,
             )
 
-        from cdx_toolkit.repackage.pipeline import WARCFilter
+        from cdx_toolkit.repackage.repackager import Repackager
 
-        return WARCFilter(
+        return Repackager(
             source=source,
             prefix_path=args.prefix,
             writer_info=info,
@@ -224,7 +224,7 @@ def repackage_by_warc_location(args: Namespace, records, info: dict):
             log_every_n=args.log_every_n,
             n_parallel_readers=args.parallel_readers,
             max_file_size=args.size,
-        ).filter()
+        ).run()
     except MissingWarcLocation as e:
         raise UsageError(str(e))
 

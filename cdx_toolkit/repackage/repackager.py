@@ -57,7 +57,7 @@ class ThroughputTracker:
         )
 
 
-class WARCFilter:
+class Repackager:
     """Copy WARC records, byte for byte, from the WARC files of the range jobs into a series of WARC files.
 
     A pipeline of asyncio tasks:
@@ -88,11 +88,11 @@ class WARCFilter:
         max_file_size: Optional[int] = 1 * 1024 * 1024 * 1024,  # 1 GiB (for WARC outputs)
         next_file_sequence: Optional[Callable[[int], int]] = None,
     ):
-        """Initialize the WARC filter.
+        """Set up the pipeline.
 
         Args:
             source: The WARC ranges to repackage: an object with iter_range_jobs() (e.g. a RecordsSource).
-            prefix_path: Output path prefix for filtered WARC files.
+            prefix_path: Output path prefix for the WARC files.
             writer_info: Dictionary containing writer metadata.
             writer_subprefix: Optional subprefix for writer output paths.
             write_paths_as_metadata_records: Optional list of file paths to write as metadata records.
@@ -137,8 +137,8 @@ class WARCFilter:
         self.max_file_size = max_file_size
         self.next_file_sequence = next_file_sequence  # see WarcFileSeries
 
-    def filter(self) -> RepackageResult:
-        """Perform the filtering process (calls async method via asyncio.run).
+    def run(self) -> RepackageResult:
+        """Run the pipeline (runs run_async in an event loop).
 
         Captures that cannot be fetched are counted as failed (the others are still written); a failure to
         write raises.
@@ -152,7 +152,7 @@ class WARCFilter:
                 logger.info('Using uvloop event loop')
             except ImportError:
                 logger.warning('CDXT_UVLOOP=1 but uvloop is not installed; using default asyncio loop')
-        return runner(self.filter_async())
+        return runner(self.run_async())
 
     def s3_read_config(self):
         """botocore config of the S3 client for range reads: high throughput."""
@@ -174,8 +174,8 @@ class WARCFilter:
             connect_timeout=10,
         )
 
-    async def filter_async(self) -> RepackageResult:
-        """Filter process using a three stage approach (job generator, warc reader, warc writer)."""
+    async def run_async(self) -> RepackageResult:
+        """Run the three stages: producer of range jobs, reader tasks, writer task."""
         range_jobs_queue: asyncio.Queue = asyncio.Queue(maxsize=self.range_jobs_queue_size)
         warc_records_queue: asyncio.Queue = asyncio.Queue(maxsize=self.warc_records_queue_size)
 
@@ -187,7 +187,7 @@ class WARCFilter:
                 client = aioboto3.Session().client('s3', config=self.s3_write_config())
                 write_s3_client = await stack.enter_async_context(client)
 
-            return await self._run_filter_pipeline(
+            return await self._run_pipeline(
                 range_jobs_queue=range_jobs_queue,
                 warc_records_queue=warc_records_queue,
                 readers=Readers(stack, self.s3_read_config, self.max_attempts, self.base_backoff_seconds),
@@ -225,14 +225,14 @@ class WARCFilter:
         logger.info('Generated %d range jobs', count)
         return count
 
-    async def _run_filter_pipeline(
+    async def _run_pipeline(
         self,
         range_jobs_queue: asyncio.Queue,
         warc_records_queue: asyncio.Queue,
         readers: Readers,
         write_s3_client=None,
     ) -> RepackageResult:
-        """Run the actual filter pipeline with or without S3 client.
+        """Run the pipeline, with or without an S3 client for the output.
 
         A failing writer (or source) stops the whole pipeline, as does cancellation: all tasks are cancelled,
         and the writer aborts the file it is writing (no incomplete WARC file or S3 object is left).

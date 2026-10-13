@@ -152,15 +152,15 @@ def test_index_to_parquet_and_repackage(tmp_path, capsys):
 def test_repackage_options_are_passed_to_the_warc_fetcher(tmp_path):
     captures = _write_captures(tmp_path / 'captures.jsonl', [])
 
-    with patch('cdx_toolkit.repackage.pipeline.WARCFilter') as warc_filter:
-        warc_filter.return_value.filter.return_value = RepackageResult()
+    with patch('cdx_toolkit.repackage.repackager.Repackager') as repackager:
+        repackager.return_value.run.return_value = RepackageResult()
         main([
             'repackage', captures, '--prefix', 'FOO', '--subprefix', 'BAR', '--size', '1MiB',
             '--creator', 'me', '--description', 'test', '--add-metadata-record', 'a.txt',
             '--parallel-readers', '4', '--warc-download-prefix', 's3://commoncrawl',
         ])
 
-    kwargs = warc_filter.call_args.kwargs
+    kwargs = repackager.call_args.kwargs
     assert kwargs['prefix_path'] == 'FOO'
     assert kwargs['writer_subprefix'] == 'BAR'
     assert kwargs['max_file_size'] == 1024 * 1024
