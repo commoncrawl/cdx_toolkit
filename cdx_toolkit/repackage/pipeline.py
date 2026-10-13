@@ -3,11 +3,10 @@ import concurrent.futures
 import contextlib
 import logging
 import os
-import statistics
 import threading
 import time
-from dataclasses import dataclass
-from typing import Callable, List, Optional, Dict
+from dataclasses import dataclass, field
+from typing import Callable, Dict, List, Optional, Tuple
 
 
 from cdx_toolkit.aws import botocore_config
@@ -24,15 +23,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ThroughputTracker:
-    """Track throughput metrics for fetchers and consumers."""
+    """Items (range reads, or written records), bytes and WARC records of a reader or the writer, for the logs."""
 
-    start_time: float = 0.0
+    start_time: float = field(default_factory=time.time)
     total_bytes: int = 0
     total_requests: int = 0
     total_records: int = 0
-
-    def start(self):
-        self.start_time = time.time()
 
     def add(self, bytes_count: int = 0, records_count: int = 0, requests_count: int = 1):
         self.total_bytes += bytes_count
@@ -53,22 +49,24 @@ class ThroughputTracker:
             'records_per_sec': self.total_records / elapsed if elapsed > 0 else 0,
         }
 
+    def summary(self) -> str:
+        stats = self.get_stats()
+        return (
+            f"{stats['total_requests']} items, {stats['total_bytes'] / (1024 * 1024):.1f} MB "
+            f"in {stats['elapsed']:.1f}s, {stats['mb_per_sec']:.2f} MB/s, {stats['records_per_sec']:.2f} rec/s"
+        )
+
 
 class WARCFilter:
-    """Filter or extract specific records from WARC files based on CDX indexes.
+    """Copy WARC records, byte for byte, from the WARC files of the range jobs into a series of WARC files.
 
-    The WARC filter uses a three stage listner-producer-consumer pattern.
+    A pipeline of asyncio tasks:
+    - the producer drives the (sync) source in a thread and puts its range jobs into a queue,
+    - N reader tasks read the bytes of the jobs, with the RangeReader for the URL scheme of each job
+      (HTTP, S3, Hugging Face buckets; see readers/),
+    - one writer task writes them to the WarcFileSeries (local files or S3 objects; see writers/).
 
-    Filter targets:
-    - CDX index files from local or remote file system, containing paths to WARC files and positions of target records.
-
-    WARC reader:
-    - HTTP range reads
-    - S3 range reads
-
-    WARC writer:
-    - Local file system
-    - S3 using multi-part uploads
+    Multi-core scaling is done with processes (see multiprocess.py), each with its own pipeline.
     """
 
     def __init__(
@@ -288,7 +286,7 @@ class WARCFilter:
             for task in done:
                 task.result()  # raises the exception of a failed task
             requested, readers_results = await feeder
-            writer_result = await warc_writer
+            writer_tracker = await warc_writer
         except BaseException:
             stop.set()
             for task in tasks:
@@ -296,28 +294,19 @@ class WARCFilter:
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
 
-        readers_records = sum([result['stats']['total_records'] for result in readers_results])
-        readers_mb_per_sec = self.num_readers * statistics.mean(
-            [result['stats']['mb_per_sec'] for result in readers_results]
-        )
-        readers_records_per_sec = self.num_readers * statistics.mean(
-            [result['stats']['records_per_sec'] for result in readers_results]
-        )
-
-        logger.info(f'All WARC readers completed: {readers_records} records')
-        logger.info(f'Total reader throughput: {readers_mb_per_sec:.2f} MB/s; {readers_records_per_sec:.2f} rec/s')
-
-        writer_stats = writer_result['stats']
-        logger.info(f"WARC writer completed: {writer_stats['total_records']} records")
+        reader_stats = [tracker.get_stats() for tracker, _ in readers_results]
         logger.info(
-            f"Total writer throughput: {writer_stats['mb_per_sec']:.2f} MB/s; "
-            f"{writer_stats['records_per_sec']:.2f} rec/s"
+            'All WARC readers completed: %d records, %.2f MB/s, %.2f rec/s',
+            sum(stats['total_records'] for stats in reader_stats),
+            sum(stats['mb_per_sec'] for stats in reader_stats),
+            sum(stats['records_per_sec'] for stats in reader_stats),
         )
+        logger.info('WARC writer completed: %s', writer_tracker.summary())
 
-        failed = sum(result['failed'] for result in readers_results)
+        failed = sum(failed for _, failed in readers_results)
         if failed:
             logger.error('%d of %d captures could not be fetched', failed, requested)
-        return RepackageResult(requested=requested, written=writer_stats['total_records'], failed=failed)
+        return RepackageResult(requested=requested, written=writer_tracker.total_records, failed=failed)
 
     async def read_warc_records(
         self,
@@ -325,7 +314,7 @@ class WARCFilter:
         range_jobs_queue: asyncio.Queue,
         warc_records_queue: asyncio.Queue,
         readers: Readers,
-    ) -> dict:
+    ) -> Tuple[ThroughputTracker, int]:
         """Read WARC records based on range jobs -> enqueue RangePayload.
 
         Args:
@@ -335,50 +324,34 @@ class WARCFilter:
             readers: The readers of WARC ranges (by URL scheme).
 
         Returns:
-            dict: Statistics dictionary with reader_id and throughput stats.
+            The reader's throughput and the number of range jobs that could not be read.
         """
         tracker = ThroughputTracker()
-        tracker.start()
-        counter = 0
         failed = 0
 
         while True:
             job = await range_jobs_queue.get()
+            if job is _STOP:
+                logger.info('WARC Reader %d stopping: %s', reader_id, tracker.summary())
+                return tracker, failed
+            assert isinstance(job, RangeJob)
             try:
-                if job is _STOP:
-                    stats = tracker.get_stats()
-                    logger.info(
-                        'WARC Reader %d stopping. Stats: %.1fs, %d requests, %.1f MB, %.2f MB/s, %.2f req/s',
-                        reader_id,
-                        stats['elapsed'],
-                        stats['total_requests'],
-                        stats['total_bytes'] / (1024 * 1024),
-                        stats['mb_per_sec'],
-                        stats['requests_per_sec'],
-                    )
-                    break  # Exit loop, but still execute finally block
-                assert isinstance(job, RangeJob)
                 reader = await readers.for_url(job.url)
                 data = await reader.read(job)
-                tracker.add(bytes_count=len(data), records_count=job.records_count)
-                counter += 1
-
-                # Log progress every N items
-                self.log_reader(reader_id=reader_id, counter=counter, tracker=tracker)
-
-                await warc_records_queue.put(RangePayload(job=job, data=data))
             except Exception as e:
                 # the capture is lost, the others are still fetched; the run fails at the end
                 failed += 1
                 logger.error('WARC Reader %d failed on %s [%d,%d]: %r', reader_id, job.url, job.offset, job.length, e)
-
-        return {'reader_id': reader_id, 'stats': tracker.get_stats(), 'failed': failed}
+                continue
+            tracker.add(bytes_count=len(data), records_count=job.records_count)
+            self.log_progress(f'WARC Reader {reader_id}', tracker)
+            await warc_records_queue.put(RangePayload(job=job, data=data))
 
     async def write_warc_records(
         self,
         warc_records_queue: asyncio.Queue,
         s3_client=None,
-    ) -> dict:
+    ) -> ThroughputTracker:
         """Write the WARC records to the series of output files (one series per process), rotating at --size.
 
         Args:
@@ -386,7 +359,7 @@ class WARCFilter:
             s3_client: Optional S3 client for writing WARC files to S3.
 
         Returns:
-            dict: Statistics dictionary with throughput stats.
+            The writer's throughput.
         """
         series = WarcFileSeries(
             self.prefix_path,
@@ -403,8 +376,6 @@ class WARCFilter:
             base_backoff_seconds=self.base_backoff_seconds,
         )
         tracker = ThroughputTracker()
-        tracker.start()
-        counter = 0
 
         # any failure is fatal, also when closing a file: the current file is aborted (removed, or its S3 upload
         # aborted), the files completed before stay
@@ -412,48 +383,19 @@ class WARCFilter:
             while True:
                 item = await warc_records_queue.get()
                 if item is _STOP:
-                    stats = tracker.get_stats()
-                    logger.info(
-                        'WARC writer stopping. Stats: %.1fs, %d items, %.1f MB written, %.2f MB/s write speed',
-                        stats['elapsed'],
-                        stats['total_requests'],
-                        stats['total_bytes'] / (1024 * 1024),
-                        stats['mb_per_sec'],
-                    )
                     break
                 assert isinstance(item, RangePayload)
-                counter += 1
                 await series.write(item.data)
                 tracker.add(bytes_count=len(item.data), records_count=item.job.records_count)
-                self.log_writer(counter=counter, tracker=tracker)
+                self.log_progress('WARC Writer', tracker)
             await series.close()
         except BaseException:
             logger.error('WARC writer failed, aborting the current WARC file')
             await series.abort()
             raise
+        return tracker
 
-        return {'stats': tracker.get_stats()}
-
-    def log_reader(self, reader_id: int, counter: int, tracker: ThroughputTracker):
-        """Log progress every N items."""
-        if self.log_every_n > 0 and counter % self.log_every_n == 0:
-            stats = tracker.get_stats()
-            logger.info(
-                'WARC Reader %d: %d items, %.1f MB, %.2f MB/s, %.2f req/s',
-                reader_id,
-                counter,
-                stats['total_bytes'] / (1024 * 1024),
-                stats['mb_per_sec'],
-                stats['requests_per_sec'],
-            )
-
-    def log_writer(self, counter: int, tracker: ThroughputTracker):
-        """Log progress every N items."""
-        if self.log_every_n > 0 and counter % self.log_every_n == 0:
-            stats = tracker.get_stats()
-            logger.info(
-                'WARC Writer: %d items, %.1f MB written, %.2f MB/s',
-                counter,
-                stats['total_bytes'] / (1024 * 1024),
-                stats['mb_per_sec'],
-            )
+    def log_progress(self, name: str, tracker: ThroughputTracker) -> None:
+        """Log the progress of a reader or the writer every --log-every-n items."""
+        if self.log_every_n > 0 and tracker.total_requests % self.log_every_n == 0:
+            logger.info('%s: %s', name, tracker.summary())

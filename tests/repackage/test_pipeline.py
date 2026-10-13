@@ -9,8 +9,8 @@ fixture_path = TEST_DATA_PATH / 'repackage'
 _FAKE_SOURCE = RecordsSource([], 'https://data.commoncrawl.org')
 
 
-def test_log_writer(caplog):
-    """Test log writer."""
+def test_log_progress(caplog):
+    """Progress is logged every --log-every-n items."""
     import logging
     caplog.set_level(logging.INFO, logger='cdx_toolkit.repackage.pipeline')
 
@@ -21,27 +21,9 @@ def test_log_writer(caplog):
         log_every_n=2,
     )
     tracker = ThroughputTracker()
-    warc_filter.log_writer(0, tracker)
-    warc_filter.log_writer(1, tracker)
-    warc_filter.log_writer(2, tracker)
+    for _ in range(5):
+        tracker.add(bytes_count=1024 * 1024, records_count=1)
+        warc_filter.log_progress('WARC Reader 1', tracker)
 
-    assert caplog.text.count('WARC Writer') == 2
-
-
-def test_log_reader(caplog):
-    """Test log reader."""
-    import logging
-    caplog.set_level(logging.INFO, logger='cdx_toolkit.repackage.pipeline')
-
-    warc_filter = WARCFilter(
-        source=_FAKE_SOURCE,
-        prefix_path='/fake/prefix',
-        writer_info={'writer_id': 1},
-        log_every_n=2,
-    )
-    tracker = ThroughputTracker()
-    warc_filter.log_reader(1, 0, tracker)
-    warc_filter.log_reader(1, 1, tracker)
-    warc_filter.log_reader(1, 2, tracker)
-
-    assert caplog.text.count('WARC Reader 1') == 2
+    assert caplog.text.count('WARC Reader 1: ') == 2
+    assert 'WARC Reader 1: 4 items, 4.0 MB in ' in caplog.text
