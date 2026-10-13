@@ -6,6 +6,10 @@ import re
 import threading
 from typing import Optional
 
+from cdx_toolkit.myrequests import myrequests_get
+from cdx_toolkit.repackage.jobs import RangeJob
+from cdx_toolkit.repackage.readers import RangeReader
+
 
 class RangeError(OSError):
     """A range request returned other bytes than requested."""
@@ -59,3 +63,22 @@ async def run_in_daemon_thread(func, *args, **kwargs):
 
     threading.Thread(target=run, daemon=True).start()
     return await future
+
+
+class HttpRangeReader(RangeReader):
+    """Range requests with myrequests_get (retries, and the minimum interval between requests to a host, also
+    across threads)."""
+
+    async def read(self, job: RangeJob) -> bytes:
+        headers = {'Range': f'bytes={job.offset}-{job.offset + job.length - 1}'}
+        # in a thread, so that the event loop (other readers, the writer) is not blocked. If this task is
+        # cancelled, the thread stops at its next wait (before a retry), and nothing waits for it.
+        stop = threading.Event()
+        try:
+            resp = await run_in_daemon_thread(myrequests_get, job.url, headers=headers, stop=stop)
+        finally:
+            stop.set()
+        check_range_response(
+            resp.status_code, resp.headers.get('Content-Range'), len(resp.content), job.offset, job.length, job.url
+        )
+        return resp.content

@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from cdx_toolkit.repackage.readers.hf import (
-    HfHttpReader,
+    HfRangeReader,
     make_hf_reader,
     signed_url_expiry,
     hf_fs_path,
@@ -64,7 +64,7 @@ def test_retry_after_falls_back_to_default():
     assert retry_after_seconds({'Retry-After': 'soon'}, default=3.0) == 3.0
 
 
-# --- HfHttpReader: resolve each WARC file once, read the records from the signed CDN URL ---
+# --- HfRangeReader: resolve each WARC file once, read the records from the signed CDN URL ---
 
 WARC_A = 'hf://buckets/commoncrawl/commoncrawl/crawl-data/a.warc.gz'
 WARC_B = 'hf://buckets/commoncrawl/commoncrawl/crawl-data/b.warc.gz'
@@ -128,7 +128,7 @@ def test_signed_url_expiry():
 
 def test_resolves_each_file_once():
     session = FakeSession()
-    reader = HfHttpReader(session, token='tok')
+    reader = HfRangeReader(session, token='tok')
 
     async def run():
         return [await _read(reader, url, o, 10) for url, o in [(WARC_A, 0), (WARC_A, 100), (WARC_B, 5), (WARC_A, 50)]]
@@ -146,7 +146,7 @@ def test_resolves_each_file_once():
 
 def test_concurrent_reads_share_one_resolve():
     session = FakeSession()
-    reader = HfHttpReader(session)
+    reader = HfRangeReader(session)
 
     async def run():
         return await asyncio.gather(*[_read(reader, WARC_A, o, 4) for o in range(0, 80, 8)])
@@ -156,8 +156,8 @@ def test_concurrent_reads_share_one_resolve():
 
 
 def test_resolves_again_before_expiry():
-    session = FakeSession(ttl=HfHttpReader.EXPIRY_MARGIN - 1)  # signed URLs that are about to expire
-    reader = HfHttpReader(session)
+    session = FakeSession(ttl=HfRangeReader.EXPIRY_MARGIN - 1)  # signed URLs that are about to expire
+    reader = HfRangeReader(session)
 
     async def run():
         await _read(reader, WARC_A, 0, 4)
@@ -169,7 +169,7 @@ def test_resolves_again_before_expiry():
 
 def test_resolves_again_when_cdn_rejects_signed_url():
     session = FakeSession(get_statuses=[403])
-    reader = HfHttpReader(session)
+    reader = HfRangeReader(session)
 
     assert asyncio.run(_read(reader, WARC_A, 10, 4)) == DATA[10:14]
     assert len(session.heads) == 2  # the rejected URL was resolved again
@@ -178,7 +178,7 @@ def test_resolves_again_when_cdn_rejects_signed_url():
 
 def test_waits_on_resolver_rate_limit():
     session = FakeSession(head_statuses=[429, 429])
-    reader = HfHttpReader(session)
+    reader = HfRangeReader(session)
 
     async def no_sleep(_):
         return None
@@ -192,7 +192,7 @@ def test_waits_on_resolver_rate_limit():
 
 def test_resolve_without_redirect_reads_from_the_resolve_url():
     session = FakeSession(head_statuses=[200])
-    reader = HfHttpReader(session, token='tok')
+    reader = HfRangeReader(session, token='tok')
 
     assert asyncio.run(_read(reader, WARC_A, 0, 4)) == DATA[0:4]
     url, headers = session.gets[0]
@@ -202,11 +202,11 @@ def test_resolve_without_redirect_reads_from_the_resolve_url():
 def test_resolve_errors_are_retried_then_raised():
     # resolving is retried within each read attempt (3 x 3 attempts)
     session = FakeSession(head_statuses=[500] * 3)
-    assert asyncio.run(_read(HfHttpReader(session), WARC_A, 0, 4)) == DATA[0:4]
+    assert asyncio.run(_read(HfRangeReader(session), WARC_A, 0, 4)) == DATA[0:4]
 
     session = FakeSession(head_statuses=[500] * 9)
     with pytest.raises(OSError, match='HF HEAD .* -> 500'):
-        asyncio.run(_read(HfHttpReader(session), WARC_A, 0, 4))
+        asyncio.run(_read(HfRangeReader(session), WARC_A, 0, 4))
     assert len(session.heads) == 9
 
 
@@ -220,13 +220,13 @@ def test_resolve_errors_are_retried_then_raised():
 def test_read_errors_are_retried_then_raised(get_statuses, offset, length, error):
     session = FakeSession(get_statuses=get_statuses)
     with pytest.raises(OSError, match=error):
-        asyncio.run(_read(HfHttpReader(session), WARC_A, offset, length))
+        asyncio.run(_read(HfRangeReader(session), WARC_A, offset, length))
     assert len(session.gets) == 3
 
 
 def test_cdn_rate_limit_is_waited_out(caplog):
     session = FakeSession(get_statuses=[429])
-    reader = HfHttpReader(session)
+    reader = HfRangeReader(session)
 
     async def run():
         data = await _read(reader, WARC_A, 0, 4)
@@ -241,16 +241,16 @@ def test_cdn_rate_limit_is_waited_out(caplog):
 
 
 def test_gives_up_after_too_many_rate_limits(monkeypatch):
-    monkeypatch.setattr(HfHttpReader, 'MAX_THROTTLE_RETRIES', 0)
+    monkeypatch.setattr(HfRangeReader, 'MAX_THROTTLE_RETRIES', 0)
     session = FakeSession(get_statuses=[429, 429, 429])
     with pytest.raises(OSError, match='HF 429: gave up after'):
-        asyncio.run(_read(HfHttpReader(session), WARC_A, 0, 4))
+        asyncio.run(_read(HfRangeReader(session), WARC_A, 0, 4))
 
 
 def test_signed_url_cache_is_bounded(monkeypatch):
-    monkeypatch.setattr(HfHttpReader, 'MAX_CACHED_URLS', 1)
+    monkeypatch.setattr(HfRangeReader, 'MAX_CACHED_URLS', 1)
     session = FakeSession()
-    reader = HfHttpReader(session)
+    reader = HfRangeReader(session)
 
     async def run():
         for url in (WARC_A, WARC_B, WARC_A):
@@ -273,4 +273,4 @@ def test_make_hf_reader():
                 return reader
 
     reader = asyncio.run(run())
-    assert isinstance(reader, HfHttpReader) and reader.token == 'tok'
+    assert isinstance(reader, HfRangeReader) and reader.token == 'tok'

@@ -2,14 +2,8 @@
 The captures to repackage: index records (as written by `cdxt index`) -> range jobs, and the result of a run.
 '''
 import logging
-import threading
 from dataclasses import dataclass
-from typing import Iterable, Iterator, Mapping, Optional, Tuple
-
-from cdx_toolkit.myrequests import myrequests_get
-from cdx_toolkit.repackage.readers.http import RangeError, check_range_response, run_in_daemon_thread
-from cdx_toolkit.repackage.retries import RETRYABLE_ERRORS, with_retries
-from cdx_toolkit.repackage.urls import is_hf_url, is_s3_url, parse_s3_uri
+from typing import Iterable, Iterator, Mapping, Optional
 
 
 logger = logging.getLogger(__name__)
@@ -31,7 +25,7 @@ class RepackageResult:
 
 @dataclass(frozen=True)
 class RangeJob:
-    """Defines a S3 or HTTP range read request."""
+    """The bytes offset .. offset+length-1 of a WARC file (one or more WARC records)."""
 
     url: str
     offset: int
@@ -40,84 +34,6 @@ class RangeJob:
     # WARC filename of the record as given in the index (e.g. crawl-data/...warc.gz, relative to the download
     # prefix), used to sort and shard the jobs by WARC file; `url` is authoritative for fetching.
     filename: Optional[str] = None
-
-    def is_s3(self):
-        return is_s3_url(self.url)
-
-    def get_s3_bucket_and_key(self) -> Tuple[str, str]:
-        if self.is_s3():
-            return parse_s3_uri(self.url)
-        else:
-            raise ValueError('Cannot get bucket and key from a HTTP job')
-
-    def is_hf(self):
-        return is_hf_url(self.url)
-
-    async def ranged_get_bytes(
-        self,
-        max_attempts: int,
-        base_backoff_seconds: float,
-        readers=None,
-    ) -> bytes:
-        """Ranged get request to S3 (aioboto3), an HF bucket, or HTTP; `readers` provides the S3 and HF readers."""
-        offset = self.offset
-        length = self.length
-
-        end = offset + length - 1  # inclusive
-
-        if self.is_s3():
-            # read from S3
-            bucket, key = self.get_s3_bucket_and_key()
-            if readers is None:
-                raise ValueError('s3:// range read requires readers (none were provided)')
-            s3_client = await readers.s3()
-
-            async def transfer() -> bytes:
-                """The whole transfer is retried: the request and reading the body (closed in any case)."""
-                resp = await s3_client.get_object(Bucket=bucket, Key=key, Range=f'bytes={offset}-{end}')
-                async with resp['Body'] as body:
-                    data = await body.read()
-                if len(data) != length:
-                    raise RangeError(f'{self.url}: requested {length} bytes from offset {offset}, got {len(data)}')
-                return data
-
-            return await with_retries(
-                transfer,
-                op_name=f'ranged_get {bucket}/{key}[{offset}:{end}]',
-                max_attempts=max_attempts,
-                base_backoff_seconds=base_backoff_seconds,
-                retry_on=RETRYABLE_ERRORS + (RangeError,),
-            )
-
-        elif self.is_hf():
-            # read from a Hugging Face bucket (hf://) via the configured HF reader
-            if readers is None:
-                raise ValueError('hf:// range read requires readers (none were provided)')
-            hf_reader = await readers.hf()
-            return await hf_reader.ranged_get(
-                self.url,
-                offset,
-                length,
-                max_attempts=max_attempts,
-                base_backoff_seconds=base_backoff_seconds,
-            )
-
-        else:
-            # read from HTTP
-            headers = {'Range': 'bytes={}-{}'.format(offset, end)}
-
-            # in a thread, so that the event loop (other readers, the writer) is not blocked; myrequests_get keeps
-            # the minimum interval between requests to a host across threads. If this task is cancelled, the
-            # thread stops at its next wait (before a retry), and nothing waits for it.
-            stop = threading.Event()
-            try:
-                resp = await run_in_daemon_thread(myrequests_get, self.url, headers=headers, stop=stop)
-            finally:
-                stop.set()
-            check_range_response(
-                resp.status_code, resp.headers.get('Content-Range'), len(resp.content), offset, length, self.url
-            )
-            return resp.content
 
 
 @dataclass(frozen=True)

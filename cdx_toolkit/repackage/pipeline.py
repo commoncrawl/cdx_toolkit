@@ -197,7 +197,7 @@ class WARCFilter:
             return await self._run_filter_pipeline(
                 range_jobs_queue=range_jobs_queue,
                 warc_records_queue=warc_records_queue,
-                readers=Readers(stack, self.s3_read_config),
+                readers=Readers(stack, self.s3_read_config, self.max_attempts, self.base_backoff_seconds),
                 write_s3_client=write_s3_client,
             )
 
@@ -363,11 +363,8 @@ class WARCFilter:
                     )
                     break  # Exit loop, but still execute finally block
                 assert isinstance(job, RangeJob)
-                data = await job.ranged_get_bytes(
-                    self.max_attempts,
-                    self.base_backoff_seconds,
-                    readers=readers,
-                )
+                reader = await readers.for_url(job.url)
+                data = await reader.read(job)
                 tracker.add(bytes_count=len(data), records_count=job.records_count)
                 counter += 1
 

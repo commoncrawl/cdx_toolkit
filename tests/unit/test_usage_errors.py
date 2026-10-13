@@ -1,5 +1,4 @@
 """Usage errors and small edge cases of `cdxt index` / `cdxt repackage` and their helpers."""
-import asyncio
 import io
 import runpy
 import sys
@@ -15,7 +14,6 @@ from cdx_toolkit.indexes.patterns import domain_entry_to_surts, url_pattern_to_s
 from cdx_toolkit.indexes.backends.duckdb import DuckDbBackend
 from cdx_toolkit.indexes.backends.sql_builder import quote_sql_string, sql_timestamp
 from cdx_toolkit.record_io import RecordWriter, import_pyarrow, read_records, write_records
-from cdx_toolkit.repackage.jobs import RangeJob
 
 from tests.conftest import TEST_DATA_PATH
 
@@ -120,19 +118,3 @@ def test_parquet_batches_exactly_full(tmp_path, monkeypatch):
     path = str(tmp_path / 'r.parquet')
     assert write_records(iter([{'url': str(i)} for i in range(4)]), path, 'parquet') == 4
     assert [r['url'] for r in read_records(path)] == ['0', '1', '2', '3']
-
-
-def test_hf_range_job_needs_a_reader():
-    job = RangeJob(url='hf://buckets/ns/name/x.warc.gz', offset=0, length=1)
-    with pytest.raises(ValueError, match='requires readers'):
-        asyncio.run(job.ranged_get_bytes(1, 0))
-
-    class Reader:
-        async def ranged_get(self, url, offset, length, **kwargs):
-            return b'x'
-
-    class Readers:
-        async def hf(self):
-            return Reader()
-
-    assert asyncio.run(job.ranged_get_bytes(1, 0, readers=Readers())) == b'x'

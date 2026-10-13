@@ -1,35 +1,66 @@
 '''
-The readers of WARC ranges, by URL scheme: HTTP(S) (http.py), S3 (aioboto3) and Hugging Face buckets (hf.py).
+The readers of WARC ranges, one per storage: HTTP(S) (http.py), S3 (s3.py) and Hugging Face buckets (hf.py).
 '''
+from abc import ABC, abstractmethod
 import asyncio
 import contextlib
 from typing import Callable
 
-from cdx_toolkit.repackage.readers.hf import make_hf_reader
+from cdx_toolkit.repackage.jobs import RangeJob
+from cdx_toolkit.repackage.urls import is_hf_url, is_s3_url
+
+
+class RangeReader(ABC):
+    """Reads the bytes of a range job from its storage."""
+
+    @abstractmethod
+    async def read(self, job: RangeJob) -> bytes:
+        """Exactly the bytes job.offset .. job.offset + job.length - 1 of job.url; raises (after the reader's
+        retries) if they cannot be read, e.g. RangeError for other bytes than requested."""
+        raise NotImplementedError  # pragma: no cover
 
 
 class Readers:
-    """The readers of WARC ranges, by the URL scheme of a range job, each created when it is first needed:
-    an S3 client for s3:// and the HF reader for hf:// (http(s):// needs none). They are closed with `stack`."""
+    """The reader of each range job, by the URL scheme of the job: S3 for s3://, the HF reader for hf://,
+    HTTP otherwise. The S3 and HF readers are created when they are first needed, and closed with `stack`."""
 
-    def __init__(self, stack: contextlib.AsyncExitStack, s3_config_factory: Callable):
+    def __init__(self, stack: contextlib.AsyncExitStack, s3_config_factory: Callable, max_attempts: int = 5,
+                 base_backoff_seconds: float = 0.5):
+        from cdx_toolkit.repackage.readers.http import HttpRangeReader
+
         self.stack = stack
         self.s3_config_factory = s3_config_factory
+        self.max_attempts = max_attempts
+        self.base_backoff_seconds = base_backoff_seconds
+        self._http = HttpRangeReader()
         self._s3 = None
         self._hf = None
         self._lock = asyncio.Lock()
 
-    async def s3(self):
+    async def for_url(self, url: str) -> RangeReader:
+        if is_s3_url(url):
+            return await self._s3_reader()
+        if is_hf_url(url):
+            return await self._hf_reader()
+        return self._http
+
+    async def _s3_reader(self) -> RangeReader:
         async with self._lock:
             if self._s3 is None:
                 import aioboto3
 
+                from cdx_toolkit.repackage.readers.s3 import S3RangeReader
+
                 client = aioboto3.Session().client('s3', config=self.s3_config_factory())
-                self._s3 = await self.stack.enter_async_context(client)
+                client = await self.stack.enter_async_context(client)
+                self._s3 = S3RangeReader(client, self.max_attempts, self.base_backoff_seconds)
             return self._s3
 
-    async def hf(self):
+    async def _hf_reader(self) -> RangeReader:
         async with self._lock:
             if self._hf is None:
-                self._hf = await self.stack.enter_async_context(make_hf_reader())
+                from cdx_toolkit.repackage.readers import hf
+
+                reader = hf.make_hf_reader(self.max_attempts, self.base_backoff_seconds)
+                self._hf = await self.stack.enter_async_context(reader)
             return self._hf

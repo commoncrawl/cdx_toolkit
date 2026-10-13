@@ -23,6 +23,8 @@ import time
 from typing import Tuple
 from urllib.parse import parse_qs, urlparse
 
+from cdx_toolkit.repackage.jobs import RangeJob
+from cdx_toolkit.repackage.readers import RangeReader
 from cdx_toolkit.repackage.readers.http import check_range_response
 from cdx_toolkit.repackage.urls import HF_SCHEME, is_hf_url
 
@@ -82,7 +84,7 @@ def signed_url_expiry(url: str, default_ttl: float) -> float:
     return time.time() + default_ttl
 
 
-class HfHttpReader:
+class HfRangeReader(RangeReader):
     """Async ranged ``GET`` requests against the HF CDN (aiohttp), resolving each WARC file once.
 
     The ``/resolve/`` URL of a WARC file is requested once (``HEAD``, no redirect
@@ -108,9 +110,11 @@ class HfHttpReader:
     # Number of signed URLs kept; the input is sorted by WARC file, so few are in use at a time.
     MAX_CACHED_URLS = 4096
 
-    def __init__(self, session, token=None):
+    def __init__(self, session, token=None, max_attempts: int = 5, base_backoff_seconds: float = 0.5):
         self.session = session
         self.token = token
+        self.max_attempts = max_attempts
+        self.base_backoff_seconds = base_backoff_seconds
         self.throttle_count = 0       # number of 429s seen
         self.throttle_wait_s = 0.0    # cumulative time spent backing off 429s
         self.resolve_count = 0        # number of /resolve/ requests
@@ -181,6 +185,12 @@ class HfHttpReader:
                 self._locks.pop(old, None)
             return url
 
+    async def read(self, job: RangeJob) -> bytes:
+        return await self.ranged_get(
+            job.url, job.offset, job.length, max_attempts=self.max_attempts,
+            base_backoff_seconds=self.base_backoff_seconds,
+        )
+
     async def ranged_get(
         self,
         url: str,
@@ -241,7 +251,7 @@ class HfHttpReader:
 
 
 @contextlib.asynccontextmanager
-async def make_hf_reader():
+async def make_hf_reader(max_attempts: int = 5, base_backoff_seconds: float = 0.5):
     """Async context manager yielding an HF reader that owns an ``aiohttp`` session.
 
     Imports are lazy so the optional ``hf`` extra is only required when actually
@@ -253,7 +263,7 @@ async def make_hf_reader():
     timeout = aiohttp.ClientTimeout(total=300, sock_connect=15)
     connector = aiohttp.TCPConnector(limit=0, ttl_dns_cache=300)
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
-        reader = HfHttpReader(session, token=get_token())
+        reader = HfRangeReader(session, get_token(), max_attempts, base_backoff_seconds)
         try:
             yield reader
         finally:
