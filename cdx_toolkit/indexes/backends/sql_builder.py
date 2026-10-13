@@ -1,13 +1,17 @@
 '''
-SQL queries for the columnar URL index (Athena, DuckDB): escaping, the WHERE clause of the guided queries, crawls.
+SQL text for the columnar URL index (Athena, DuckDB): escaping, the WHERE clause of the guided queries, crawls.
 '''
+import datetime
 import logging
 import re
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from cdx_toolkit.commoncrawl import normalize_crawl, get_cc_endpoints, match_cc_crawls
+from cdx_toolkit.timeutils import pad_timestamp, pad_timestamp_up
 
-from .patterns import domain_to_surts, normalize_host
+from ..base import UsageError
+from ..patterns import domain_to_surts, normalize_host, url_pattern_to_surts
+from ..query import IndexQuery
 
 
 logger = logging.getLogger(__name__)
@@ -174,3 +178,53 @@ def resolve_crawl_names(crawl_arg) -> List[str]:
     raw_index_list = get_cc_endpoints(CC_INDEX_MIRROR)
     matched = match_cc_crawls(crawls, raw_index_list)
     return [endpoint_to_crawl_name(ep) for ep in matched]
+
+
+def sql_timestamp(timestamp: str, end: bool = False) -> str:
+    """CDX timestamp (e.g. 2008, 200906302359) -> SQL TIMESTAMP literal of its first second, or with `end`, of the
+    second after its last second (an exclusive end, which includes the fractions of the last second)."""
+    if not re.fullmatch(r'\d{4,14}', timestamp):
+        raise UsageError(f'invalid timestamp {timestamp!r}, use e.g. 2008, 20080328 or 200906302359')
+    padded = pad_timestamp_up(timestamp) if end else pad_timestamp(timestamp)
+    try:
+        moment = datetime.datetime.strptime(padded, '%Y%m%d%H%M%S')
+        if end:
+            moment += datetime.timedelta(seconds=1)
+    except (ValueError, OverflowError):
+        raise UsageError(f'invalid timestamp {timestamp!r}') from None
+    return f"TIMESTAMP '{moment:%Y-%m-%d %H:%M:%S}'"
+
+
+def check_language(code: str) -> str:
+    """An ISO 639-3 language code (three letters, e.g. eng or deu), in lowercase."""
+    language = code.strip().lower()
+    if not re.fullmatch(r'[a-z]{3}', language):
+        raise UsageError(f'invalid language {code!r}, use ISO 639-3 codes (three letters), e.g. eng or deu')
+    return language
+
+
+def url_surtkeys(query: IndexQuery) -> Tuple[List[str], List[str]]:
+    """--url patterns -> (url_surtkey prefixes, exact url_surtkey values)."""
+    prefixes, exact = [], []
+    for pattern in query.urls:
+        p, e = url_pattern_to_surts(pattern)
+        prefixes += p
+        exact += e
+    return prefixes, exact
+
+
+def query_conditions(query: IndexQuery) -> List[str]:
+    """WHERE predicates for --from, --to and --language."""
+    conditions = []
+    if query.from_ts:
+        conditions.append(f'fetch_time >= {sql_timestamp(query.from_ts)}')
+    if query.to:
+        conditions.append(f'fetch_time < {sql_timestamp(query.to, end=True)}')
+    if query.languages:
+        # primary content language: the first of the comma-separated content_languages
+        predicates = []
+        for code in query.languages:
+            language = check_language(code)
+            predicates += [f"content_languages = '{language}'", f"content_languages LIKE '{language},%'"]
+        conditions.append('(' + ' OR '.join(predicates) + ')')
+    return conditions

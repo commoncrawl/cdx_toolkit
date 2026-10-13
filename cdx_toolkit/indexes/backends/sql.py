@@ -1,19 +1,15 @@
 '''
-Index backends for the columnar URL index (parquet), queried with SQL via AWS Athena or DuckDB.
+The common logic of the backends for the columnar URL index (parquet), queried with SQL (see duckdb.py, athena.py).
 '''
 import datetime
 import logging
 import re
 import sys
 from typing import Iterator, List, Mapping, Optional, Tuple
-from urllib.parse import parse_qs, urlparse
 
-from cdx_toolkit.timeutils import pad_timestamp, pad_timestamp_up
-
-from .base import IndexBackend, UsageError
-from .patterns import url_pattern_to_surts
-from .query import IndexQuery, field_flag
-from .sql_query import build_sql, resolve_crawl_names
+from ..base import IndexBackend, UsageError
+from ..query import IndexQuery, field_flag
+from .sql_builder import build_sql, query_conditions, resolve_crawl_names, url_surtkeys
 
 
 LOGGER = logging.getLogger(__name__)
@@ -98,56 +94,6 @@ def normalize_row(row: Mapping) -> dict:
     return record
 
 
-def sql_timestamp(timestamp: str, end: bool = False) -> str:
-    """CDX timestamp (e.g. 2008, 200906302359) -> SQL TIMESTAMP literal of its first second, or with `end`, of the
-    second after its last second (an exclusive end, which includes the fractions of the last second)."""
-    if not re.fullmatch(r'\d{4,14}', timestamp):
-        raise UsageError(f'invalid timestamp {timestamp!r}, use e.g. 2008, 20080328 or 200906302359')
-    padded = pad_timestamp_up(timestamp) if end else pad_timestamp(timestamp)
-    try:
-        moment = datetime.datetime.strptime(padded, '%Y%m%d%H%M%S')
-        if end:
-            moment += datetime.timedelta(seconds=1)
-    except (ValueError, OverflowError):
-        raise UsageError(f'invalid timestamp {timestamp!r}') from None
-    return f"TIMESTAMP '{moment:%Y-%m-%d %H:%M:%S}'"
-
-
-def check_language(code: str) -> str:
-    """An ISO 639-3 language code (three letters, e.g. eng or deu), in lowercase."""
-    language = code.strip().lower()
-    if not re.fullmatch(r'[a-z]{3}', language):
-        raise UsageError(f'invalid language {code!r}, use ISO 639-3 codes (three letters), e.g. eng or deu')
-    return language
-
-
-def url_surtkeys(query: IndexQuery) -> Tuple[List[str], List[str]]:
-    """--url patterns -> (url_surtkey prefixes, exact url_surtkey values)."""
-    prefixes, exact = [], []
-    for pattern in query.urls:
-        p, e = url_pattern_to_surts(pattern)
-        prefixes += p
-        exact += e
-    return prefixes, exact
-
-
-def query_conditions(query: IndexQuery) -> List[str]:
-    """WHERE predicates for --from, --to and --language."""
-    conditions = []
-    if query.from_ts:
-        conditions.append(f'fetch_time >= {sql_timestamp(query.from_ts)}')
-    if query.to:
-        conditions.append(f'fetch_time < {sql_timestamp(query.to, end=True)}')
-    if query.languages:
-        # primary content language: the first of the comma-separated content_languages
-        predicates = []
-        for code in query.languages:
-            language = check_language(code)
-            predicates += [f"content_languages = '{language}'", f"content_languages LIKE '{language},%'"]
-        conditions.append('(' + ' OR '.join(predicates) + ')')
-    return conditions
-
-
 class SqlBackend(IndexBackend):
     """Common logic of the SQL backends: guided query building, cost guard, row normalization."""
 
@@ -225,83 +171,3 @@ class SqlBackend(IndexBackend):
         sql, n_crawls = self.prepare(query)
         scope = f'{n_crawls} crawl(s)' if n_crawls else 'all crawls (or not verifiable)'
         return f'-- {self.name} query on {self.location}, restricted to {scope}\n{sql.strip()}\n'
-
-
-class DuckDbBackend(SqlBackend):
-    """The columnar index queried with DuckDB: a hive-partitioned directory or parquet files (local, s3, hf)."""
-
-    name = 'DuckDB'
-    engine = 'duckdb'
-    url_file_hint = (
-        ':\n\n'
-        '  SELECT idx.url, idx.warc_filename, idx.warc_record_offset, idx.warc_record_length\n'
-        "  FROM read_parquet('s3://commoncrawl/cc-index/table/cc-main/warc/crawl=CC-MAIN-2024-33/subset=warc/"
-        "*.parquet') AS idx\n"
-        "  JOIN read_csv('urls.csv') AS target ON idx.url = target.url"
-    )
-
-    def __init__(self, location: str, assume_yes: bool = False):
-        if "'" in location:
-            raise UsageError(f'invalid index location {location!r}')
-        super().__init__(location, assume_yes)
-
-    def from_clause(self, crawls):
-        from .duckdb import build_from_clause
-
-        if self.location.endswith('.parquet'):  # file(s), possibly a glob
-            return f"read_parquet('{self.location}', hive_partitioning=true)", False
-        # hive-partitioned index directory: prune the crawls in the glob
-        return build_from_clause(self.location, crawls), True
-
-    def iter_sql_rows(self, sql):
-        from .duckdb import iter_duckdb_rows
-
-        return iter_duckdb_rows(sql)
-
-
-class AthenaBackend(SqlBackend):
-    """The columnar index queried with AWS Athena.
-
-    Location: athena://athena.<region>.amazonaws.com[:443]/<database>?S3OutputLocation=s3://...[&table=ccindex]
-    """
-
-    name = 'Athena'
-    engine = 'athena'
-    url_file_hint = (
-        ' (after creating an Athena table `target_urls` from the URL file on S3):\n\n'
-        '  SELECT idx.url, idx.warc_filename, idx.warc_record_offset, idx.warc_record_length\n'
-        '  FROM ccindex AS idx\n'
-        '  JOIN target_urls AS target ON idx.url = target.url\n'
-        "  WHERE idx.crawl = 'CC-MAIN-2024-33' AND idx.subset = 'warc'"
-    )
-
-    def __init__(self, location: str, assume_yes: bool = False):
-        super().__init__(location, assume_yes)
-        self.region, self.database, self.table, self.s3_output_location = parse_athena_location(location)
-
-    def from_clause(self, crawls):
-        return self.table, False
-
-    def iter_sql_rows(self, sql):
-        from .athena import iter_athena_rows
-
-        return iter_athena_rows(sql, self.database, self.s3_output_location, region_name=self.region)
-
-
-def parse_athena_location(location: str) -> Tuple[str, str, str, str]:
-    """athena://athena.us-east-1.amazonaws.com:443/ccindex?S3OutputLocation=s3://bucket/path/
-    -> (region, database, table, S3 output location)"""
-    parsed = urlparse(location)
-    match = re.fullmatch(r'athena\.([a-z0-9-]+)\.amazonaws\.com', parsed.hostname or '')
-    if parsed.scheme != 'athena' or not match:
-        raise UsageError(
-            f'invalid Athena location {location!r}, expected '
-            'athena://athena.<region>.amazonaws.com/<database>?S3OutputLocation=s3://<bucket>/<path>/'
-        )
-    params = parse_qs(parsed.query)
-    s3_output_location = params.get('S3OutputLocation', [None])[0]
-    if not s3_output_location or not s3_output_location.startswith('s3://'):
-        raise UsageError(f'the Athena location {location!r} needs a S3OutputLocation=s3://... parameter')
-    database = parsed.path.strip('/') or 'ccindex'
-    table = params.get('table', ['ccindex'])[0]
-    return match.group(1), database, table, s3_output_location

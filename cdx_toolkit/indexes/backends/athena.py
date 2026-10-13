@@ -1,11 +1,16 @@
 '''
-Running queries with AWS Athena (boto3).
+Index backend for the columnar URL index queried with AWS Athena (boto3).
 '''
 import logging
+import re
 import time
-from typing import Iterable, Iterator, Optional
+from typing import Iterable, Iterator, Optional, Tuple
+from urllib.parse import parse_qs, urlparse
 
 from cdx_toolkit.aws import botocore_config
+
+from ..base import UsageError
+from .sql import SqlBackend
 
 
 logger = logging.getLogger(__name__)
@@ -129,3 +134,49 @@ def iter_result_rows(client, query_execution_id: str) -> Iterable[dict]:
         for row in rows:
             row_data = [cell.get('VarCharValue', None) for cell in row['Data']]
             yield dict(zip(column_names, row_data))
+
+
+class AthenaBackend(SqlBackend):
+    """The columnar index queried with AWS Athena.
+
+    Location: athena://athena.<region>.amazonaws.com[:443]/<database>?S3OutputLocation=s3://...[&table=ccindex]
+    """
+
+    name = 'Athena'
+    engine = 'athena'
+    url_file_hint = (
+        ' (after creating an Athena table `target_urls` from the URL file on S3):\n\n'
+        '  SELECT idx.url, idx.warc_filename, idx.warc_record_offset, idx.warc_record_length\n'
+        '  FROM ccindex AS idx\n'
+        '  JOIN target_urls AS target ON idx.url = target.url\n'
+        "  WHERE idx.crawl = 'CC-MAIN-2024-33' AND idx.subset = 'warc'"
+    )
+
+    def __init__(self, location: str, assume_yes: bool = False):
+        super().__init__(location, assume_yes)
+        self.region, self.database, self.table, self.s3_output_location = parse_athena_location(location)
+
+    def from_clause(self, crawls):
+        return self.table, False
+
+    def iter_sql_rows(self, sql):
+        return iter_athena_rows(sql, self.database, self.s3_output_location, region_name=self.region)
+
+
+def parse_athena_location(location: str) -> Tuple[str, str, str, str]:
+    """athena://athena.us-east-1.amazonaws.com:443/ccindex?S3OutputLocation=s3://bucket/path/
+    -> (region, database, table, S3 output location)"""
+    parsed = urlparse(location)
+    match = re.fullmatch(r'athena\.([a-z0-9-]+)\.amazonaws\.com', parsed.hostname or '')
+    if parsed.scheme != 'athena' or not match:
+        raise UsageError(
+            f'invalid Athena location {location!r}, expected '
+            'athena://athena.<region>.amazonaws.com/<database>?S3OutputLocation=s3://<bucket>/<path>/'
+        )
+    params = parse_qs(parsed.query)
+    s3_output_location = params.get('S3OutputLocation', [None])[0]
+    if not s3_output_location or not s3_output_location.startswith('s3://'):
+        raise UsageError(f'the Athena location {location!r} needs a S3OutputLocation=s3://... parameter')
+    database = parsed.path.strip('/') or 'ccindex'
+    table = params.get('table', ['ccindex'])[0]
+    return match.group(1), database, table, s3_output_location

@@ -1,7 +1,7 @@
 """Building the guided SQL queries for the columnar index (no engine)."""
 import pytest
 
-from cdx_toolkit.indexes.sql_query import build_sql, escape_sql_literal
+from cdx_toolkit.indexes.backends.sql_builder import build_sql, escape_sql_literal
 
 
 def test_build_query_hostnames():
@@ -84,9 +84,9 @@ def test_build_query_rejects_injection_hostname():
 def test_resolve_crawl_names():
     from unittest.mock import patch
 
-    from cdx_toolkit.indexes.sql_query import resolve_crawl_names
+    from cdx_toolkit.indexes.backends.sql_builder import resolve_crawl_names
 
     endpoints = [f'https://index.commoncrawl.org/CC-MAIN-2024-{week}-index' for week in (30, 33, 38)]
-    with patch('cdx_toolkit.indexes.sql_query.get_cc_endpoints', return_value=endpoints):
+    with patch('cdx_toolkit.indexes.backends.sql_builder.get_cc_endpoints', return_value=endpoints):
         assert resolve_crawl_names('2') == ['CC-MAIN-2024-33', 'CC-MAIN-2024-38']
         assert resolve_crawl_names('CC-MAIN-2024-30') == ['CC-MAIN-2024-30']

@@ -1,10 +1,13 @@
 '''
-Running queries with DuckDB, e.g. over the columnar URL index on S3 or on Hugging Face.
+Index backend for the columnar URL index queried with DuckDB, e.g. on S3, on Hugging Face or local.
 '''
 import logging
 from typing import Iterator, List, Optional
 
 from cdx_toolkit.aws import aws_region, duckdb_settings
+
+from ..base import UsageError
+from .sql import SqlBackend
 
 
 logger = logging.getLogger(__name__)
@@ -89,3 +92,31 @@ def iter_duckdb_rows(query: str, region_name: Optional[str] = None) -> Iterator[
                 yield dict(zip(col_names, row))
     finally:
         con.close()
+
+
+class DuckDbBackend(SqlBackend):
+    """The columnar index queried with DuckDB: a hive-partitioned directory or parquet files (local, s3, hf)."""
+
+    name = 'DuckDB'
+    engine = 'duckdb'
+    url_file_hint = (
+        ':\n\n'
+        '  SELECT idx.url, idx.warc_filename, idx.warc_record_offset, idx.warc_record_length\n'
+        "  FROM read_parquet('s3://commoncrawl/cc-index/table/cc-main/warc/crawl=CC-MAIN-2024-33/subset=warc/"
+        "*.parquet') AS idx\n"
+        "  JOIN read_csv('urls.csv') AS target ON idx.url = target.url"
+    )
+
+    def __init__(self, location: str, assume_yes: bool = False):
+        if "'" in location:
+            raise UsageError(f'invalid index location {location!r}')
+        super().__init__(location, assume_yes)
+
+    def from_clause(self, crawls):
+        if self.location.endswith('.parquet'):  # file(s), possibly a glob
+            return f"read_parquet('{self.location}', hive_partitioning=true)", False
+        # hive-partitioned index directory: prune the crawls in the glob
+        return build_from_clause(self.location, crawls), True
+
+    def iter_sql_rows(self, sql):
+        return iter_duckdb_rows(sql)

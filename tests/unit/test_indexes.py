@@ -3,8 +3,8 @@ from unittest.mock import patch
 import pytest
 
 from cdx_toolkit.indexes import IndexQuery, UsageError, iter_index_records, resolve_index
-from cdx_toolkit.indexes.cdx_api import CdxApiBackend
-from cdx_toolkit.indexes.cdx_files import CdxFilesBackend
+from cdx_toolkit.indexes.backends.cdx_api import CdxApiBackend
+from cdx_toolkit.indexes.backends.cdx_files import CdxFilesBackend
 from cdx_toolkit.indexes.resolve import is_cdx_api_location
 
 

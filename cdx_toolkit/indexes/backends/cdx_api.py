@@ -4,8 +4,8 @@ from typing import Iterator, Mapping, Optional
 import cdx_toolkit
 from cdx_toolkit.commoncrawl import normalize_crawl
 
-from .base import IndexBackend, UsageError
-from .query import IndexQuery
+from ..base import IndexBackend, UsageError
+from ..query import IndexQuery
 
 
 LOGGER = logging.getLogger(__name__)

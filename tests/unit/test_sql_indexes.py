@@ -6,11 +6,12 @@ import pytest
 
 from cdx_toolkit.cli import main
 from cdx_toolkit.indexes import IndexQuery, UsageError, resolve_index
-from cdx_toolkit.indexes.cdx_api import CdxApiBackend
-from cdx_toolkit.indexes.cdx_files import CdxFilesBackend
-from cdx_toolkit.indexes.sql import (
-    AthenaBackend, check_language, DuckDbBackend, normalize_row, parse_athena_location, query_conditions,
-)
+from cdx_toolkit.indexes.backends.cdx_api import CdxApiBackend
+from cdx_toolkit.indexes.backends.cdx_files import CdxFilesBackend
+from cdx_toolkit.indexes.backends.athena import AthenaBackend, parse_athena_location
+from cdx_toolkit.indexes.backends.duckdb import DuckDbBackend
+from cdx_toolkit.indexes.backends.sql import normalize_row
+from cdx_toolkit.indexes.backends.sql_builder import check_language, query_conditions
 
 from tests.conftest import requires_duckdb
 
@@ -103,7 +104,7 @@ def test_duckdb_guided_query_prunes_crawls():
     backend = DuckDbBackend('s3://bucket/index/')
     query = IndexQuery(hostnames=['www.example.com'], domains=['example.org'], crawl='CC-MAIN-2024-33', limit=5)
 
-    with patch('cdx_toolkit.indexes.sql.resolve_crawl_names', return_value=['CC-MAIN-2024-33']):
+    with patch('cdx_toolkit.indexes.backends.sql.resolve_crawl_names', return_value=['CC-MAIN-2024-33']):
         sql, n_crawls = backend.prepare(query)
 
     assert n_crawls == 1
@@ -146,7 +147,7 @@ def test_athena_guided_query_and_cost_guard():
     assert 'FROM ccindex' in sql
 
     # not restricted to crawls -> confirmation needed, refused in non-interactive mode
-    with patch('cdx_toolkit.indexes.sql.sys.stdin') as stdin, patch.object(backend, 'iter_sql_rows') as rows:
+    with patch('cdx_toolkit.indexes.backends.sql.sys.stdin') as stdin, patch.object(backend, 'iter_sql_rows') as rows:
         stdin.isatty.return_value = False
         with pytest.raises(SystemExit, match='--yes'):
             list(backend.iter_records(query))
@@ -207,7 +208,7 @@ def parquet_index(tmp_path):
 @requires_duckdb
 def test_index_duckdb_end_to_end(parquet_index, tmp_path, capsys):
     output = tmp_path / 'out.jsonl'
-    with patch('cdx_toolkit.indexes.sql.resolve_crawl_names', return_value=['CC-MAIN-2024-33']):
+    with patch('cdx_toolkit.indexes.backends.sql.resolve_crawl_names', return_value=['CC-MAIN-2024-33']):
         main([
             'index', str(parquet_index), '--index-format', 'duckdb', '--domain', 'example.com',
             '--crawl', 'CC-MAIN-2024-33', '-o', str(output),

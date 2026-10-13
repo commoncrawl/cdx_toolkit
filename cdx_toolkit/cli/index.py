@@ -209,7 +209,7 @@ def get_output_format(args: Namespace) -> str:
 
 def writes_per_file(args: Namespace, backend) -> bool:
     """CDX files with an output path without file extension: one output per CDX file."""
-    from cdx_toolkit.indexes.cdx_files import CdxFilesBackend
+    from cdx_toolkit.indexes.backends.cdx_files import CdxFilesBackend
 
     return (
         isinstance(backend, CdxFilesBackend)

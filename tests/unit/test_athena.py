@@ -7,8 +7,9 @@ import pytest
 
 from cdx_toolkit.cli import main
 from cdx_toolkit.indexes import IndexQuery
-from cdx_toolkit.indexes.sql import AthenaBackend
-from cdx_toolkit.indexes.athena import iter_athena_rows, make_client, report_query_cost, run_athena_query
+from cdx_toolkit.indexes.backends.athena import (
+    AthenaBackend, iter_athena_rows, make_client, report_query_cost, run_athena_query,
+)
 
 ATHENA = 'athena://athena.eu-west-1.amazonaws.com/mydb?S3OutputLocation=s3://bucket/athena/'
 COLUMNS = ['url', 'fetch_time', 'fetch_status', 'warc_filename', 'warc_record_offset', 'warc_record_length']
@@ -57,8 +58,8 @@ class FakeAthenaClient:
 @pytest.fixture
 def client():
     fake = FakeAthenaClient()
-    with patch('cdx_toolkit.indexes.athena.make_client', return_value=fake), \
-            patch('cdx_toolkit.indexes.athena.time.sleep'):
+    with patch('cdx_toolkit.indexes.backends.athena.make_client', return_value=fake), \
+            patch('cdx_toolkit.indexes.backends.athena.time.sleep'):
         yield fake
 
 
@@ -89,8 +90,8 @@ def test_athena_count():
     fake.get_paginator = lambda name: type('P', (), {'paginate': lambda self, **kw: iter([
         {'ResultSet': {'Rows': [{'Data': [{'VarCharValue': 'n'}]}, {'Data': [{'VarCharValue': '42'}]}]}}
     ])})()
-    with patch('cdx_toolkit.indexes.athena.make_client', return_value=fake), \
-            patch('cdx_toolkit.indexes.athena.time.sleep'):
+    with patch('cdx_toolkit.indexes.backends.athena.make_client', return_value=fake), \
+            patch('cdx_toolkit.indexes.backends.athena.time.sleep'):
         assert AthenaBackend(ATHENA, assume_yes=True).count(IndexQuery(domains=['example.com'])) == 42
     assert fake.started[0]['QueryString'].startswith('SELECT count(*) AS n FROM (')
 
@@ -105,7 +106,7 @@ def test_failed_query(caplog):
 
 def test_query_timeout_is_cancelled():
     fake = FakeAthenaClient(states=['RUNNING'])
-    with patch('cdx_toolkit.indexes.athena.time.sleep'), pytest.raises(TimeoutError):
+    with patch('cdx_toolkit.indexes.backends.athena.time.sleep'), pytest.raises(TimeoutError):
         run_athena_query(fake, 'SELECT 1', 'ccindex', 's3://b/p/', max_wait_time=0)
     assert fake.stopped == ['qid']
 

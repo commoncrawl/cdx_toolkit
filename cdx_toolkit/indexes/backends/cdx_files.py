@@ -14,12 +14,12 @@ from typing import Iterator, List, Mapping, Optional, Tuple
 from cdx_toolkit.record_io import check_glob, format_from_path, is_glob, open_text, parse_cdxj_line, read_records
 from cdx_toolkit.timeutils import pad_timestamp, pad_timestamp_up
 
-from .base import IndexBackend, UsageError
-from .patterns import (  # noqa: F401 (url_pattern_to_surts, to_surt)
+from ..base import IndexBackend, UsageError
+from ..patterns import (  # noqa: F401 (url_pattern_to_surts, to_surt)
     domain_entry_to_surts, domain_to_surts, hostname_to_surts, normalize_host, to_surt, url_hostname,
     url_pattern_to_surts,
 )
-from .query import IndexQuery
+from ..query import IndexQuery
 
 
 LOGGER = logging.getLogger(__name__)

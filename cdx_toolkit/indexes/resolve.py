@@ -2,7 +2,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from .base import IndexBackend, UsageError
-from .cdx_api import CdxApiBackend
+from .backends.cdx_api import CdxApiBackend
 
 
 # index names that map to CDX API sources known by CDXFetcher
@@ -62,20 +62,20 @@ def resolve_index(
     location = INDEX_ALIASES.get(location, location)
 
     if index_format == 'athena':
-        from .sql import AthenaBackend
+        from .backends.athena import AthenaBackend
 
         return AthenaBackend(location, assume_yes=assume_yes)
 
     if index_format == 'duckdb':
         if location in INDEX_NAMES or is_cdx_api_location(location) or location.startswith('athena://'):
             raise UsageError(f'{location} cannot be queried with DuckDB; use a path to the parquet index')
-        from .sql import DuckDbBackend
+        from .backends.duckdb import DuckDbBackend
 
         return DuckDbBackend(location, assume_yes=assume_yes)
 
     if is_cdx_api_location(location):
         return CdxApiBackend(location, cc_mirror=cc_mirror, cc_sort=cc_sort)
 
-    from .cdx_files import CdxFilesBackend
+    from .backends.cdx_files import CdxFilesBackend
 
     return CdxFilesBackend(location)

@@ -3,8 +3,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cdx_toolkit.indexes import duckdb as duckdb_source
-from cdx_toolkit.indexes.duckdb import build_from_clause, iter_duckdb_rows
+from cdx_toolkit.indexes.backends import duckdb as duckdb_source
+from cdx_toolkit.indexes.backends.duckdb import build_from_clause, iter_duckdb_rows
 
 from tests.conftest import requires_duckdb
 

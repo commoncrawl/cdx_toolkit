@@ -6,7 +6,7 @@ import pytest
 
 from cdx_toolkit.cli import main
 from cdx_toolkit.indexes import IndexQuery, UsageError, iter_index_records
-from cdx_toolkit.indexes.cdx_files import (
+from cdx_toolkit.indexes.backends.cdx_files import (
     CdxFilesBackend, domain_entry_to_surts, load_url_patterns, url_pattern_to_surts,
 )
 from cdx_toolkit.record_io import write_records
