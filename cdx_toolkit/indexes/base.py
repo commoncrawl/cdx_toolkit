@@ -10,7 +10,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class UsageError(ValueError):
-    """Invalid combination of command line options, reported without a traceback."""
+    """Invalid query or options (the command line reports it without a traceback)."""
 
 
 class QueryPlan(ABC):
@@ -25,7 +25,8 @@ class IndexBackend(ABC):
     """An index that can be queried for captures: the CDX API, CDX files, or the columnar index (Athena, DuckDB).
 
     A query (IndexQuery, the same for every backend) becomes the backend's plan (plan()), which is run by
-    select() and count(), or shown by explain()."""
+    select() and select_count(), or shown by explain(). The public methods records(), count() and explain()
+    validate the query first."""
 
     name: str = ''
     supported_options: FrozenSet[str] = frozenset()
@@ -53,17 +54,26 @@ class IndexBackend(ABC):
         raise NotImplementedError  # pragma: no cover
 
     @abstractmethod
-    def count(self, query: IndexQuery) -> int:
-        """Cheap (possibly estimated) number of captures matching the query, at most --limit (without the
-        client-side --url-fgrep/--url-fgrepv, which cannot be combined with --count)."""
+    def select_count(self, query: IndexQuery) -> int:
+        """Cheap (possibly estimated) number of captures matching the query, at most --limit (see count())."""
         raise NotImplementedError  # pragma: no cover
 
     def records(self, query: IndexQuery) -> Iterator[Mapping]:
         """The captures of the query: at most --limit, then filtered by --url-fgrep/--url-fgrepv (client-side)."""
+        self.validate(query)
         return filter_by_url(islice(self.select(query), query.limit), query.url_fgrep, query.url_fgrepv)
+
+    def count(self, query: IndexQuery) -> int:
+        """The number of captures matching the query, at most --limit; without the client-side
+        --url-fgrep/--url-fgrepv, which cannot be combined with it."""
+        self.validate(query)
+        if query.url_fgrep or query.url_fgrepv:
+            raise UsageError('--count cannot be used with --url-fgrep or --url-fgrepv')
+        return self.select_count(query)
 
     def explain(self, query: IndexQuery) -> str:
         """Describe what would be queried (--dry-run), without querying the index."""
+        self.validate(query)
         return self.plan(query).describe()
 
 

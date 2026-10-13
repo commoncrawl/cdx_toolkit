@@ -54,7 +54,7 @@ class CdxApiBackend(IndexBackend):
                     seen.add(identity)
                 yield capture
 
-    def count(self, query: IndexQuery) -> int:
+    def select_count(self, query: IndexQuery) -> int:
         """Estimate from the number of index pages, at most --limit; overlapping selectors are counted more
         than once."""
         cdx = self._fetcher(query)

@@ -136,8 +136,8 @@ def test_index_to_parquet_and_repackage(tmp_path, capsys):
     pytest.importorskip('pyarrow')
     captures = tmp_path / 'captures.parquet'
 
-    with patch.object(cdx_toolkit.cli.index, 'resolve_index') as resolve_index:
-        resolve_index.return_value.records.return_value = iter([CC_CAPTURE])
+    with patch.object(cdx_toolkit.cli.index, 'open_index') as open_index:
+        open_index.return_value.records.return_value = iter([CC_CAPTURE])
         main(['index', 'cc', '--url', 'example.com/*', '-o', str(captures)])
     with pytest.raises(SystemExit):
         main(['index', 'cc', '--url', 'example.com/*', '--output-format', 'parquet'])

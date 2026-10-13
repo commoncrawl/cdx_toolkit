@@ -41,7 +41,7 @@ def detect_index_format(location: str) -> str:
     return 'cdx'
 
 
-def resolve_index(
+def open_index(
     location: str,
     index_format: str = 'auto',
     cc_mirror: Optional[str] = None,

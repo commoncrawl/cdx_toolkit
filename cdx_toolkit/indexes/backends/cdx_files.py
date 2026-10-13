@@ -236,7 +236,7 @@ class CdxFilesBackend(IndexBackend):
             for line in iter_matching_lines(cdx_file.path, matcher):
                 yield parse_cdxj_line(line)
 
-    def count(self, query: IndexQuery) -> int:
+    def select_count(self, query: IndexQuery) -> int:
         """Exact number of selected captures, at most --limit (reads all files, or until the limit)."""
         return sum(1 for _ in islice(self.select(query), query.limit))
 
@@ -244,6 +244,7 @@ class CdxFilesBackend(IndexBackend):
         """Write the selected lines of each CDX file, unchanged, to <output_base>/<relative path of the file>.
 
         Returns the number of output files and captures; no file is written without matches."""
+        self.validate(query)
         if query.limit:
             raise UsageError('--limit cannot be used when writing one output per CDX file')
         capture_filter = CaptureFilter.from_query(query, url_filters=True)

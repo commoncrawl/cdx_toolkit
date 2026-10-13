@@ -13,6 +13,9 @@ FIELD_FLAGS = {
 }
 
 
+LIST_FIELDS = ('urls', 'hostnames', 'domains', 'filters', 'languages')
+
+
 def field_flag(name: str) -> str:
     return FIELD_FLAGS.get(name, '--' + name.replace('_', '-'))
 
@@ -41,6 +44,12 @@ class IndexQuery:
     limit: Optional[int] = None
     languages: List[str] = field(default_factory=list)
     sql: Optional[str] = None
+
+    def __post_init__(self):
+        # a single value, e.g. IndexQuery(urls='example.com/*'), would otherwise be iterated by character
+        for name in LIST_FIELDS:
+            if isinstance(getattr(self, name), str):
+                setattr(self, name, [getattr(self, name)])
 
     def url_patterns(self) -> List[Tuple[str, Optional[str]]]:
         """All URL selectors as (pattern, CDX API matchType) pairs."""

@@ -156,7 +156,7 @@ class SqlBackend(IndexBackend):
         for row in self.iter_sql_rows(plan.sql):
             yield normalize_row(row)
 
-    def count(self, query: IndexQuery) -> int:
+    def select_count(self, query: IndexQuery) -> int:
         plan = self.plan(query, order_by=False)
         confirm_cost(plan.n_crawls, self.engine, self.assume_yes)
         row = next(self.iter_sql_rows(f'SELECT count(*) AS n FROM ({plan.sql}) AS q'))

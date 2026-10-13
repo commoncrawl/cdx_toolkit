@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from cdx_toolkit.cli import main
-from cdx_toolkit.indexes import IndexQuery, UsageError, resolve_index
+from cdx_toolkit.indexes import IndexQuery, UsageError, open_index
 from cdx_toolkit.indexes.backends.cdx_api import CdxApiBackend
 from cdx_toolkit.indexes.backends.cdx_files import CdxFilesBackend
 from cdx_toolkit.indexes.backends.athena import AthenaBackend, AthenaLocation
@@ -34,7 +34,7 @@ ATHENA = 'athena://athena.us-east-1.amazonaws.com:443/ccindex?S3OutputLocation=s
     ],
 )
 def test_resolve_index(location, index_format, backend, backend_location):
-    resolved = resolve_index(location, index_format)
+    resolved = open_index(location, index_format)
     assert isinstance(resolved, backend)
     if backend_location:
         assert resolved.location == backend_location
@@ -50,7 +50,7 @@ def test_resolve_index(location, index_format, backend, backend_location):
 )
 def test_resolve_index_errors(location, index_format, error):
     with pytest.raises(UsageError, match=error):
-        resolve_index(location, index_format)
+        open_index(location, index_format)
 
 
 def test_athena_location():

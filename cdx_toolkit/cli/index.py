@@ -1,7 +1,7 @@
 from argparse import Namespace, RawDescriptionHelpFormatter
 import logging
 
-from cdx_toolkit.indexes import IndexQuery, UsageError, resolve_index
+from cdx_toolkit.indexes import IndexQuery, UsageError, open_index
 from cdx_toolkit.indexes.resolve import INDEX_FORMATS
 from cdx_toolkit.record_io import (
     FORMAT_CHOICES, canonical_format, format_from_path, import_pyarrow, open_text, write_records,
@@ -220,11 +220,10 @@ def writes_per_file(args: Namespace, backend) -> bool:
 
 
 def run(args: Namespace, cmdline: str):
-    backend = resolve_index(
+    backend = open_index(
         args.index, args.index_format, cc_mirror=args.cc_mirror, cc_sort=args.cc_sort, assume_yes=args.yes
     )
     query = build_query(args)
-    backend.validate(query)
 
     if writes_per_file(args, backend):
         if args.fields:
@@ -243,8 +242,6 @@ def run(args: Namespace, cmdline: str):
         return
 
     if args.count:
-        if query.url_fgrep or query.url_fgrepv:
-            raise UsageError('--count cannot be used with --url-fgrep or --url-fgrepv')
         count = backend.count(query)
         with open_text(args.output, 'w') as fh:
             fh.write(f'{count}\n')

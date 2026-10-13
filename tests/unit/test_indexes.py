@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 import pytest
 
-from cdx_toolkit.indexes import IndexQuery, UsageError, resolve_index
+from cdx_toolkit.indexes import IndexQuery, UsageError, open_index
 from cdx_toolkit.indexes.backends.cdx_api import CdxApiBackend
 from cdx_toolkit.indexes.backends.cdx_files import CdxFilesBackend
 from cdx_toolkit.indexes.resolve import is_cdx_api_location
@@ -29,21 +29,42 @@ def test_is_cdx_api_location(location, is_api):
     assert is_cdx_api_location(location) == is_api
 
 
-def test_resolve_index():
-    backend = resolve_index('cc', cc_mirror='https://mirror.example.com/', cc_sort='ascending')
+def test_open_index():
+    backend = open_index('cc', cc_mirror='https://mirror.example.com/', cc_sort='ascending')
     assert isinstance(backend, CdxApiBackend)
     assert (backend.source, backend.cc_mirror, backend.cc_sort) == ('cc', 'https://mirror.example.com/', 'ascending')
 
-    cdx_files = resolve_index('s3://commoncrawl/cc-index/collections/CC-MAIN-2024-30/indexes/cdx-*.gz')
+    cdx_files = open_index('s3://commoncrawl/cc-index/collections/CC-MAIN-2024-30/indexes/cdx-*.gz')
     assert isinstance(cdx_files, CdxFilesBackend)
     with pytest.raises(UsageError, match='unknown index format'):
-        resolve_index('cc', index_format='parquet')
+        open_index('cc', index_format='parquet')
 
 
 def test_query_options_used():
     query = IndexQuery(urls=['example.com/*'], limit=10)
     assert query.options_used() == {'urls', 'limit'}
     assert IndexQuery().options_used() == set()
+
+
+def test_query_single_values_are_lists():
+    query = IndexQuery(urls='example.com/*', domains='example.org', filters='=status:200', languages='eng')
+    assert (query.urls, query.domains, query.filters, query.languages) == (
+        ['example.com/*'], ['example.org'], ['=status:200'], ['eng'])
+
+
+@pytest.mark.parametrize('method', ['records', 'count', 'explain'])
+def test_public_methods_validate_the_query(method):
+    """A Python caller does not need to call validate() first."""
+    with patch.object(CdxApiBackend, 'select') as select, patch.object(CdxApiBackend, 'select_count') as count, \
+            pytest.raises(UsageError, match='at least one --url'):
+        getattr(CdxApiBackend('cc'), method)(IndexQuery(crawl='3'))
+    select.assert_not_called()
+    count.assert_not_called()
+
+
+def test_count_with_url_fgrep():
+    with pytest.raises(UsageError, match='--count cannot be used with --url-fgrep'):
+        CdxApiBackend('cc').count(IndexQuery(urls='example.com/*', url_fgrep='x'))
 
 
 def test_cdx_api_validate():
