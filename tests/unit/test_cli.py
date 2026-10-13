@@ -212,6 +212,19 @@ def test_repackage_with_wb_passes_size_and_warcinfo_to_the_repackager(tmp_path):
     assert [job.url for job in jobs] == ['https://web.archive.org/web/20240101120000id_/http%3A//example.com']
 
 
+def test_repackage_with_wb_rejects_common_crawl_captures(tmp_path, capsys):
+    """cdxt index cc ... | cdxt repackage --wb ia would replay the captures from another archive."""
+    captures = _write_captures(tmp_path / 'captures.jsonl', [CC_CAPTURE])
+
+    with patch('cdx_toolkit.repackage.readers.wayback.fetch_wb_warc') as fetch, pytest.raises(SystemExit) as exc:
+        main(['repackage', captures, '--wb', 'ia', '--prefix', str(tmp_path / 'out')])
+
+    assert exc.value.code == 2
+    assert 'is a Common Crawl capture' in capsys.readouterr().err
+    fetch.assert_not_called()
+    assert list(tmp_path.glob('out-*')) == []
+
+
 def test_repackage_with_wb_writes_the_warc_series(tmp_path):
     """Replays are written like copied records: -001.warc.gz with the warcinfo and metadata records, also with
     parallel readers."""

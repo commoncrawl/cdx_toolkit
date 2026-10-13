@@ -125,14 +125,14 @@ def _run(captures, prefix, subprefix, size, warc_download_prefix, wb, processes,
     (optionally multi-process)."""
     import fsspec
 
-    from cdx_toolkit.repackage.jobs import MissingWarcLocation, RecordsSource, WaybackSource
+    from cdx_toolkit.repackage.jobs import InvalidWaybackCapture, MissingWarcLocation, RecordsSource, WaybackSource
     from cdx_toolkit.repackage.urls import is_hf_url
     try:
         if wb:
             source = WaybackSource(captures, wb)
         else:
             source = RecordsSource(captures, warc_download_prefix, sort=sort)
-    except MissingWarcLocation as e:
+    except (MissingWarcLocation, InvalidWaybackCapture) as e:
         raise UsageError(str(e)) from None
 
     # make sure the output directory exists
@@ -170,5 +170,5 @@ def _run(captures, prefix, subprefix, size, warc_download_prefix, wb, processes,
             n_parallel_readers=parallel_readers,
             max_file_size=size,
         ).run()
-    except MissingWarcLocation as e:  # with sort=False, the records are read while the jobs are run
+    except (MissingWarcLocation, InvalidWaybackCapture) as e:  # streamed sources: read while the jobs are run
         raise UsageError(str(e)) from None

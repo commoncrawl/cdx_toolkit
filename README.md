@@ -208,7 +208,9 @@ replayed from the wayback machine given with `--wb` (`ia` is a shortcut for
 `https://web.archive.org/web`) and written to the same
 `<prefix>[-<subprefix>]-001.warc.gz`, ... series, also with `--parallel-readers` and
 `--add-metadata-record` (`--processes` cannot be used with `--wb`: the requests to the wayback machine
-are rate-limited per process).
+are rate-limited per process). A replay needs the `url` (http or https), `timestamp` and `status` of
+each capture. Common Crawl captures (`filename` `crawl-data/...`) are refused with `--wb`: they are
+copied from their WARC files, while a replay would get another archive's capture.
 
 In both cases, if WARC files with the same prefix and subprefix exist already
 (e.g. from an earlier run), `cdxt repackage` stops before fetching (exit

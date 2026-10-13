@@ -33,6 +33,8 @@
 	+ S3 requests use Common Crawl's recommended AWS settings (us-east-1, adaptive retries, 100000 attempts, virtual
 	  addressing, no payload signing, 2 concurrent requests) unless configured by the user; `CDXT_AWS_DEFAULTS=0` turns them off;
 	  also for Athena and, as far as DuckDB has equivalents, for DuckDB (fixes DuckDB's `http_timeout`, which is in seconds)
+	+ `cdxt repackage --wb` checks the captures before replaying them: `url` (http/https), `timestamp` and `status`
+	  are needed, and Common Crawl captures are refused (as `cdxt --cc warc` refused `--wb`)
 	+ Python API of the new commands: `cdx_toolkit.indexes.open_index()` with `IndexQuery` (`records()`, `count()`, `explain()`)
 	  and `cdx_toolkit.repackage.repackage()`; `cdxt index` and `cdxt repackage` run the same code
 	+ deprecated `cdx_toolkit.warc.get_writer()` and `CDXToolkitWARCWriter` (FutureWarning): use `repackage()`

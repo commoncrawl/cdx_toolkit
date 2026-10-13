@@ -3,7 +3,9 @@ The captures to repackage: index records (as written by `cdxt index`) -> jobs (a
 replay), and the result of a run.
 '''
 import logging
+import re
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 from typing import Iterable, Iterator, Mapping, Optional, Union
 
 
@@ -121,15 +123,49 @@ class RecordsSource:
 WAYBACK_NAMES = {'ia': 'https://web.archive.org/web'}
 
 
+WAYBACK_FIELDS = ('url', 'timestamp', 'status')
+
+# the WARC files of Common Crawl, e.g. crawl-data/CC-MAIN-2024-33/segments/..., also as a full URL
+COMMON_CRAWL_WARC = re.compile(r'(^|/)crawl-data/')
+
+
+class InvalidWaybackCapture(ValueError):
+    """A record cannot be replayed from a wayback machine: it lacks a field, or is a Common Crawl capture."""
+
+
 class WaybackSource:
     """WaybackJobs from index records (url, timestamp, status), in the order of the records: the captures are
     replayed from the wayback machine `wb` (a replay URL prefix, or a name of WAYBACK_NAMES)."""
 
     def __init__(self, records: Iterable[Mapping], wb: str):
-        from cdx_toolkit.warc import wb_replay_url
-
         self.wb = WAYBACK_NAMES.get(wb, wb)
-        self.jobs = (WaybackJob(wb_replay_url(record, self.wb), record, self.wb) for record in records)
+        self.jobs = (self.to_job(record) for record in records)
 
     def iter_range_jobs(self) -> Iterator[WaybackJob]:
         yield from self.jobs
+
+    def to_job(self, record: Mapping) -> WaybackJob:
+        from cdx_toolkit.warc import wb_replay_url
+
+        if COMMON_CRAWL_WARC.search(str(record.get('filename') or '')):
+            # the old `cdxt --cc warc` refused --wb as well
+            raise InvalidWaybackCapture(
+                f'capture {record.get("url")} is a Common Crawl capture (filename {record["filename"]}): it is '
+                'copied from its WARC file, do not use --wb'
+            )
+        missing = [name for name in WAYBACK_FIELDS if record.get(name) in (None, '')]
+        if missing:
+            raise InvalidWaybackCapture(
+                f'capture {record.get("url")} has no {", ".join(missing)}, which --wb needs to replay it '
+                f'({", ".join(WAYBACK_FIELDS)})'
+            )
+        url, timestamp = str(record['url']), str(record['timestamp'])
+        parsed = urlparse(url)
+        if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+            raise InvalidWaybackCapture(f'capture url {url!r} is not an http(s) URL, which --wb needs to replay it')
+        if not (timestamp.isdigit() and 4 <= len(timestamp) <= 14):
+            raise InvalidWaybackCapture(f'capture {url} has an invalid timestamp {timestamp!r} for --wb, '
+                                        'e.g. 20080328121314')
+        # the replay compares the status as a string (Parquet and JSON input can have numbers)
+        capture = {**record, 'url': url, 'timestamp': timestamp, 'status': str(record['status'])}
+        return WaybackJob(wb_replay_url(capture, self.wb), capture, self.wb)
