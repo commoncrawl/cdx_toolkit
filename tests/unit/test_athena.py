@@ -7,9 +7,7 @@ import pytest
 
 from cdx_toolkit.cli import main
 from cdx_toolkit.indexes import IndexQuery
-from cdx_toolkit.indexes.backends.athena import (
-    AthenaBackend, iter_athena_rows, make_client, report_query_cost, run_athena_query,
-)
+from cdx_toolkit.indexes.backends.athena import AthenaBackend, AthenaClient, make_client
 
 ATHENA = 'athena://athena.eu-west-1.amazonaws.com/mydb?S3OutputLocation=s3://bucket/athena/'
 COLUMNS = ['url', 'fetch_time', 'fetch_status', 'warc_filename', 'warc_record_offset', 'warc_record_length']
@@ -65,7 +63,7 @@ def client():
 
 def test_rows_and_cost(client, caplog):
     with caplog.at_level(logging.INFO):
-        rows = list(iter_athena_rows('SELECT 1', 'ccindex', 's3://b/p/'))
+        rows = list(AthenaClient('ccindex', 's3://b/p/').iter_rows('SELECT 1'))
     assert rows == [dict(zip(COLUMNS, row)) for row in ROWS]
     assert client.started[0]['QueryExecutionContext'] == {'Database': 'ccindex'}
     assert client.started[0]['ResultConfiguration'] == {'OutputLocation': 's3://b/p/'}
@@ -99,7 +97,7 @@ def test_athena_count():
 def test_failed_query(caplog):
     fake = FakeAthenaClient(states=['FAILED'], reason='SYNTAX_ERROR: line 1:8')
     with caplog.at_level(logging.INFO), pytest.raises(Exception, match='Query failed with status: FAILED'):
-        run_athena_query(fake, 'SELECT', 'ccindex', 's3://b/p/')
+        AthenaClient('ccindex', 's3://b/p/', client=fake).run('SELECT')
     assert 'SYNTAX_ERROR' in caplog.text
     assert fake.stopped == []
 
@@ -107,13 +105,13 @@ def test_failed_query(caplog):
 def test_query_timeout_is_cancelled():
     fake = FakeAthenaClient(states=['RUNNING'])
     with patch('cdx_toolkit.indexes.backends.athena.time.sleep'), pytest.raises(TimeoutError):
-        run_athena_query(fake, 'SELECT 1', 'ccindex', 's3://b/p/', max_wait_time=0)
+        AthenaClient('ccindex', 's3://b/p/', client=fake, max_wait_time=0).run('SELECT 1')
     assert fake.stopped == ['qid']
 
 
 def test_cost_report_without_statistics(caplog):
     with caplog.at_level(logging.INFO):
-        report_query_cost(FakeAthenaClient(scanned=None), 'qid')
+        AthenaClient('ccindex', 's3://b/p/', client=FakeAthenaClient(scanned=None)).report_cost('qid')
     assert 'Athena scanned' not in caplog.text
 
 
@@ -152,30 +150,30 @@ class _FakeAthenaClient:
         self.stopped.append(QueryExecutionId)
 
 
-def test_run_athena_query_logs_sql(caplog):
+def test_run_logs_sql(caplog):
     import logging
     client = _FakeAthenaClient()
     with caplog.at_level(logging.INFO):
-        run_athena_query(client, 'SELECT my_special_column FROM ccindex', 'ccindex', 's3://b/out/')
+        AthenaClient('ccindex', 's3://b/out/', client=client).run('SELECT my_special_column FROM ccindex')
     assert 'SELECT my_special_column FROM ccindex' in caplog.text
 
 
-def test_run_athena_query_success_no_cancel():
+def test_run_success_no_cancel():
     client = _FakeAthenaClient()
-    qid = run_athena_query(client, 'SELECT 1', 'ccindex', 's3://b/out/')
+    qid = AthenaClient('ccindex', 's3://b/out/', client=client).run('SELECT 1')
     assert qid == 'qid-123'
     assert client.stopped == []
 
 
-def test_run_athena_query_cancels_on_interrupt():
+def test_run_cancels_on_interrupt():
     client = _FakeAthenaClient(raise_on_wait=KeyboardInterrupt())
     with pytest.raises(KeyboardInterrupt):
-        run_athena_query(client, 'SELECT 1', 'ccindex', 's3://b/out/')
+        AthenaClient('ccindex', 's3://b/out/', client=client).run('SELECT 1')
     assert client.stopped == ['qid-123']
 
 
-def test_run_athena_query_cancels_on_timeout():
+def test_run_cancels_on_timeout():
     client = _FakeAthenaClient(raise_on_wait=TimeoutError('too slow'))
     with pytest.raises(TimeoutError):
-        run_athena_query(client, 'SELECT 1', 'ccindex', 's3://b/out/')
+        AthenaClient('ccindex', 's3://b/out/', client=client).run('SELECT 1')
     assert client.stopped == ['qid-123']

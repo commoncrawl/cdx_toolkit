@@ -8,7 +8,7 @@ from cdx_toolkit.cli import main
 from cdx_toolkit.indexes import IndexQuery, UsageError, resolve_index
 from cdx_toolkit.indexes.backends.cdx_api import CdxApiBackend
 from cdx_toolkit.indexes.backends.cdx_files import CdxFilesBackend
-from cdx_toolkit.indexes.backends.athena import AthenaBackend, parse_athena_location
+from cdx_toolkit.indexes.backends.athena import AthenaBackend, AthenaLocation
 from cdx_toolkit.indexes.backends.duckdb import DuckDbBackend
 from cdx_toolkit.indexes.backends.sql import normalize_row
 from cdx_toolkit.indexes.backends.sql_builder import check_language, query_conditions
@@ -53,11 +53,11 @@ def test_resolve_index_errors(location, index_format, error):
         resolve_index(location, index_format)
 
 
-def test_parse_athena_location():
-    assert parse_athena_location(ATHENA) == ('us-east-1', 'ccindex', 'ccindex', 's3://my-bucket/athena/')
-    assert parse_athena_location(
+def test_athena_location():
+    assert AthenaLocation.parse(ATHENA) == AthenaLocation('us-east-1', 'ccindex', 'ccindex', 's3://my-bucket/athena/')
+    assert AthenaLocation.parse(
         'athena://athena.eu-west-1.amazonaws.com/mydb?S3OutputLocation=s3://b/p/&table=urls'
-    ) == ('eu-west-1', 'mydb', 'urls', 's3://b/p/')
+    ) == AthenaLocation('eu-west-1', 'mydb', 'urls', 's3://b/p/')
 
 
 def test_normalize_row():
