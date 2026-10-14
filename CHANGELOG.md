@@ -28,6 +28,8 @@
 	  if WARC files with the same prefix exist already, instead of overwriting them (also with `--wb`, which
 	  numbered its files after the existing ones before)
 	+ fixed `--to` with a day (e.g. `--to 20240410`), which was padded to the end of the month, and February in leap years
+	+ `cdxt index ia --filter` with a filter the Internet Archive does not support (`=`, `~`, `!=`, `!~`) is a usage error
+	  (exit status 2) before any request, instead of a traceback while the captures are read
 	+ fixed DNS errors of hosts that worked before: they are retried again (like connection errors) instead of failing at once
 	+ removed the deprecated `cdx_iter` and `cdx_size` scripts
 	+ S3 requests use Common Crawl's recommended AWS settings (us-east-1, adaptive retries, 100000 attempts, virtual

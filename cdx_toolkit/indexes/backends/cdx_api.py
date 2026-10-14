@@ -4,6 +4,7 @@ from typing import Iterator, List, Mapping, Optional
 
 import cdx_toolkit
 from cdx_toolkit.commoncrawl import normalize_crawl
+from cdx_toolkit.compat import munge_filter
 
 from ..base import IndexBackend, QueryPlan, UsageError
 from ..query import IndexQuery
@@ -32,6 +33,15 @@ class CdxApiBackend(IndexBackend):
             raise UsageError('the CDX API needs at least one --url, --hostname or --domain')
         if query.crawl and self.source != 'cc':
             raise UsageError('--crawl can only be used with the Common Crawl index (cc)')
+        for expression in query.filters:
+            # the check of CDXFetcher, which would only run when the captures are read
+            try:
+                munge_filter([expression], self.source)
+            except ValueError as e:
+                raise UsageError(
+                    f'--filter {expression!r}: {e} (the Internet Archive supports only FIELD:REGEX and '
+                    '!FIELD:REGEX, e.g. status:200)'
+                ) from None
 
     def plan(self, query: IndexQuery) -> 'ApiPlan':
         requests = [ApiRequest(url, api_params(query, match_type)) for url, match_type in query.url_patterns()]

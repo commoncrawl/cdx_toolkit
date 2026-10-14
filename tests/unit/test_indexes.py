@@ -76,6 +76,18 @@ def test_cdx_api_validate():
         CdxApiBackend('ia').validate(IndexQuery(urls=['example.com'], crawl='3'))
 
 
+@pytest.mark.parametrize('expression', ['=status:200', '!=status:200', '~status:2..', '!~status:2..'])
+def test_ia_filter_syntax(expression):
+    """The Internet Archive has no =, ~ filters: a usage error before any request, not a ValueError when the
+    captures are read."""
+    with patch('cdx_toolkit.CDXFetcher') as fetcher, pytest.raises(UsageError, match='ia does not support'):
+        CdxApiBackend('ia').records(IndexQuery(urls='example.com/*', filters=expression))
+    fetcher.assert_not_called()
+
+    CdxApiBackend('ia').validate(IndexQuery(urls='example.com/*', filters=['status:200', '!mime:text/.*']))
+    CdxApiBackend('cc').validate(IndexQuery(urls='example.com/*', filters=expression))
+
+
 def test_unsupported_option():
     class NoFilterBackend(CdxApiBackend):
         supported_options = CdxApiBackend.supported_options - {'filters'}

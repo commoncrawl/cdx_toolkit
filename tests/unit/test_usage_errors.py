@@ -35,6 +35,8 @@ def test_python_m_cdx_toolkit_cli(monkeypatch, capsys):
         (['index', CDX_PATH, '--url', 'ex*ample.com/*'], '* can only be at the start or the end'),
         (['index', 'cc-url-index-s3', '--domain', 'example.com', '--to', '20241332'], "invalid timestamp '20241332'"),
         (["index", "/data/it's.parquet", '--domain', 'example.com'], 'invalid index location'),
+        (['index', 'ia', '--url', 'example.com/*', '--filter', '=status:200'],
+         "--filter '=status:200': ia does not support the filter ="),
     ],
 )
 def test_usage_errors(capsys, args, error):
