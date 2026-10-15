@@ -1,22 +1,35 @@
 """The URL selectors select the same captures from every backend (CDX files, the columnar index with DuckDB)."""
 import json
+from urllib.parse import urlsplit
 
 import pytest
 
 from cdx_toolkit.cli import main
-from cdx_toolkit.indexes.patterns import to_surt
 from tests.conftest import requires_duckdb
 
 
-# url, registered domain
+# url, SURT key (as in Common Crawl's indexes, written out instead of computed by the code under test),
+# registered domain
 CAPTURES = [
-    ('https://example.com/', 'example.com'),
-    ('https://www.example.com/w', 'example.com'),
-    ('https://blog.example.com/', 'example.com'),
-    ('https://a.blog.example.com/', 'example.com'),
-    ('https://ablog.example.com/', 'example.com'),
-    ('https://blogexample.com/', 'blogexample.com'),
-    ('https://example.com.au/', 'example.com.au'),
+    ('https://example.com/', 'com,example)/', 'example.com'),
+    ('https://www.example.com/w', 'com,example)/w', 'example.com'),
+    ('https://blog.example.com/', 'com,example,blog)/', 'example.com'),
+    ('https://a.blog.example.com/', 'com,example,blog,a)/', 'example.com'),
+    ('https://ablog.example.com/', 'com,example,ablog)/', 'example.com'),
+    ('https://blogexample.com/', 'com,blogexample)/', 'blogexample.com'),
+    ('https://example.com.au/', 'au,com,example)/', 'example.com.au'),
+    # path and query boundaries of URL prefixes (the SURT key drops a trailing slash)
+    ('https://example.org/blog', 'org,example)/blog', 'example.org'),
+    ('https://example.org/blog/', 'org,example)/blog', 'example.org'),
+    ('https://example.org/blog/entry', 'org,example)/blog/entry', 'example.org'),
+    ('https://example.org/blogger', 'org,example)/blogger', 'example.org'),
+    ('https://example.org/blog?x=1', 'org,example)/blog?x=1', 'example.org'),
+    # ports, and hosts that only look similar
+    ('https://example.net:8443/', 'net,example:8443)/', 'example.net'),
+    ('https://www.example.net/', 'net,example)/', 'example.net'),
+    ('https://sub.example.net:8443/p', 'net,example,sub:8443)/p', 'example.net'),
+    ('https://example.net.evil.test/', 'test,evil,net,example)/', 'evil.test'),
+    ('https://notexample.net/', 'net,notexample)/', 'notexample.net'),
 ]
 
 
@@ -27,17 +40,17 @@ def indexes(tmp_path_factory):
 
     base = tmp_path_factory.mktemp('indexes')
     lines = sorted(
-        f'{to_surt(url)} 20240801120000 '
+        f'{key} 20240801120000 '
         f'{json.dumps({"url": url, "filename": "a.warc.gz", "offset": str(i), "length": "1"})}\n'
-        for i, (url, _) in enumerate(CAPTURES)
+        for i, (url, key, _) in enumerate(CAPTURES)
     )
     (base / 'index.cdx').write_text(''.join(lines))
 
     path = base / 'columnar' / 'crawl=CC-MAIN-2024-33' / 'subset=warc'
     path.mkdir(parents=True)
     values = ', '.join(
-        f"('{to_surt(url)}', '{url}', '{url.split('/')[2]}', '{domain}', '{domain.rsplit('.', 1)[-1]}', {i})"
-        for i, (url, domain) in enumerate(CAPTURES)
+        f"('{key}', '{url}', '{urlsplit(url).hostname}', '{domain}', '{domain.rsplit('.', 1)[-1]}', {i})"
+        for i, (url, key, domain) in enumerate(CAPTURES)
     )
     duckdb.connect().execute(f'''
         COPY (SELECT *, array_to_string(list_reverse(string_split(url_host_name, '.')), '.') AS url_host_name_reversed,
@@ -77,6 +90,24 @@ def indexes(tmp_path_factory):
      ['https://example.com.au/', 'https://www.example.com/w']),
     (['--url', '*.blog.example.com'], ['https://a.blog.example.com/', 'https://blog.example.com/']),
     (['--url', 'blog.example.com/*'], ['https://blog.example.com/']),
+    # URL prefixes keep a trailing / or ? as a boundary (like the CDX API)
+    (['--url', 'example.org/blog/*'], ['https://example.org/blog/entry']),
+    (['--url', 'example.org/blog*'], [
+        'https://example.org/blog', 'https://example.org/blog/', 'https://example.org/blog/entry',
+        'https://example.org/blog?x=1', 'https://example.org/blogger',
+    ]),
+    (['--url', 'example.org/blog?*'], ['https://example.org/blog?x=1']),
+    (['--url', 'example.org/blog/?*'], ['https://example.org/blog?x=1']),
+    # hosts with a port
+    (['--hostname', 'example.net'], ['https://example.net:8443/']),
+    (['--hostname', 'sub.example.net'], ['https://sub.example.net:8443/p']),
+    (['--domain', 'example.net'], [
+        'https://example.net:8443/', 'https://sub.example.net:8443/p', 'https://www.example.net/',
+    ]),
+    (['--url', '*.example.net'], [
+        'https://example.net:8443/', 'https://sub.example.net:8443/p', 'https://www.example.net/',
+    ]),
+    (['--url', 'example.net:8443/*'], ['https://example.net:8443/']),
 ])
 def test_selectors_match_the_same_captures_on_every_backend(indexes, capsys, selector, expected):
     for index in indexes:

@@ -107,4 +107,4 @@ def test_build_query_ip_addresses_without_reversed_host():
 def test_build_query_url_with_host_range():
     q = build_sql(IndexQuery(urls=['www.example.com/blog/*']), 'ccindex')
     assert ("(url_host_name_reversed >= 'com.example' AND url_host_name_reversed < 'com.example/' "
-            "AND url_surtkey LIKE 'com,example)/blog%' ESCAPE '\\')") in q
+            "AND url_surtkey LIKE 'com,example)/blog/%' ESCAPE '\\')") in q

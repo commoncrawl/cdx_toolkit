@@ -10,14 +10,17 @@ from .base import UsageError
 def to_surt(url: str) -> str:
     from url_is_in import convert_url_to_surt
 
+    if '://' not in url:
+        url = 'http://' + url  # without a scheme, a port is not recognized ('example.com:8080/')
     return convert_url_to_surt(url)
 
 
 def url_pattern_to_surts(pattern: str) -> Tuple[List[str], List[str]]:
     """A CDX API URL pattern -> (SURT prefixes, exact SURT keys).
 
-    - `*.example.com`: the domain and its subdomains
-    - `example.com/*`, `example.com/path*`: all URLs starting with the pattern
+    - `*.example.com`: the domain and its subdomains (with any port)
+    - `example.com/*`, `example.com/path*`: all URLs starting with the pattern; a trailing / or ? is kept as a
+      boundary (`example.com/blog/*` does not select `/blogger` or `/blog?x`), like pywb's prefix search
     - `example.com/path`: exactly this URL
     """
     pattern = pattern.strip()
@@ -26,12 +29,17 @@ def url_pattern_to_surts(pattern: str) -> Tuple[List[str], List[str]]:
         if not domain or any(c in domain for c in '*/?'):
             raise UsageError(f'invalid URL pattern {pattern!r}, a domain pattern is e.g. *.example.com')
         base = to_surt(domain)[:-2]  # 'com,example)/' -> 'com,example'
-        return [base + ')', base + ','], []
+        return [base + ')', base + ',', base + ':'], []  # the domain, its subdomains, with a port
     if pattern.endswith('*'):
         prefix = pattern[:-1]
         if '*' in prefix:
             raise UsageError(f'invalid URL pattern {pattern!r}, * can only be at the start or the end')
-        return [to_surt(prefix)], []
+        key = to_surt(prefix)
+        # the SURT drops a trailing / or ? ('example.com/blog/' -> 'com,example)/blog'), the prefix keeps it
+        for boundary in ('/', '?'):
+            if prefix.endswith(boundary) and not key.endswith(boundary):
+                key += boundary
+        return [key], []
     if '*' in pattern:
         raise UsageError(f'invalid URL pattern {pattern!r}, * can only be at the start or the end')
     return [], [to_surt(pattern)]
@@ -52,9 +60,10 @@ def url_hostname(url: str) -> str:
 
 
 def hostname_to_surts(hostname: str) -> List[str]:
-    """The URLs of this host, and of the host with or without www. (the SURT key drops www.); the exact host is
-    checked with url_hostname()."""
-    return [to_surt(normalize_host(hostname) + '/')]
+    """The URLs of this host, and of the host with or without www. (the SURT key drops www.), with any port; the
+    exact host is checked with url_hostname()."""
+    key = to_surt(normalize_host(hostname) + '/')  # 'com,example)/'
+    return [key, key[:-2] + ':']
 
 
 def domain_to_surts(domain: str) -> List[str]:

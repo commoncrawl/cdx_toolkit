@@ -29,7 +29,10 @@ def count_lines(prefix, day=None):
     [
         ('example.com/*', ['com,example)/'], []),
         ('example.com/path*', ['com,example)/path'], []),
-        ('*.example.com', ['com,example)', 'com,example,'], []),
+        ('example.com/path/*', ['com,example)/path/'], []),
+        ('example.com/path?*', ['com,example)/path?'], []),
+        ('example.com:8080/*', ['com,example:8080)/'], []),
+        ('*.example.com', ['com,example)', 'com,example,', 'com,example:'], []),
         ('https://www.example.com/a', [], ['com,example)/a']),
     ],
 )
@@ -169,8 +172,8 @@ def test_dry_run(capsys):
 @pytest.mark.parametrize(
     'entry, prefixes',
     [
-        ('example.com', ['com,example)', 'com,example,']),
-        ('https://example.com/', ['com,example)', 'com,example,']),
+        ('example.com', ['com,example)', 'com,example,', 'com,example:']),
+        ('https://example.com/', ['com,example)', 'com,example,', 'com,example:']),
         ('example.com/reports', ['com,example)/reports']),
     ],
 )

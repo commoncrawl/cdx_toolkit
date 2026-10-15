@@ -52,7 +52,7 @@ def sql_like_prefix(prefix: str) -> str:
 
 def surt_tld(surt: str) -> str:
     """'com,example)/path' -> 'com'"""
-    return surt.split(',', 1)[0].split(')', 1)[0]
+    return re.split('[,):]', surt, maxsplit=1)[0]
 
 
 def reversed_host(host: str) -> Optional[str]:
@@ -75,8 +75,8 @@ def reversed_host_range(reversed_prefix: str) -> str:
 
 def surt_host_hint(surt: str) -> Optional[str]:
     """The url_host_name_reversed range of the hosts of a SURT key or prefix (e.g. 'com,example)/path' or
-    'com,example,'), None if it has no plain host (a port, an IP address)."""
-    host = surt.split(')', 1)[0].rstrip(',')
+    'com,example,' or 'com,example:8080)/'), None if it has no plain host (an IP address)."""
+    host = re.split('[):]', surt, maxsplit=1)[0].rstrip(',')
     reversed_prefix = reversed_host('.'.join(reversed(host.split(',')))) if host else None
     return reversed_host_range(reversed_prefix) if reversed_prefix else None
 

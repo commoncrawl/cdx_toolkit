@@ -137,7 +137,8 @@ def test_guided_query_url_patterns():
             f"OR ({range_org} AND url_surtkey = 'org,example)/') "
             f"OR ({range_com} AND url_surtkey LIKE 'com,example)/a\\_b%' ESCAPE '\\') "
             f"OR ({range_net} AND url_surtkey LIKE 'net,example)%' ESCAPE '\\') "
-            f"OR ({range_net} AND url_surtkey LIKE 'net,example,%' ESCAPE '\\'))") in sql
+            f"OR ({range_net} AND url_surtkey LIKE 'net,example,%' ESCAPE '\\') "
+            f"OR ({range_net} AND url_surtkey LIKE 'net,example:%' ESCAPE '\\'))") in sql
 
 
 def test_guided_query_time_range_and_languages():
