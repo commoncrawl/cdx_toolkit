@@ -3,6 +3,8 @@ import concurrent.futures
 import contextlib
 import logging
 import os
+import signal
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -20,6 +22,15 @@ from cdx_toolkit.repackage.writers.series import WarcFileSeries
 _STOP = object()
 
 logger = logging.getLogger(__name__)
+
+# the name of the thread that reads the source (see Repackager._produce_range_jobs and source_still_reading)
+SOURCE_THREAD_NAME = 'cdxt-source'
+
+
+def source_still_reading() -> bool:
+    """Whether a source thread is still reading its input (e.g. blocked on stdin from a process that keeps
+    running) after its pipeline stopped."""
+    return any(t.name == SOURCE_THREAD_NAME and t.is_alive() for t in threading.enumerate())
 
 
 @dataclass
@@ -163,11 +174,37 @@ class Repackager:
             except ImportError:
                 logger.warning('CDXT_UVLOOP=1 but uvloop is not installed; using default asyncio loop')
         try:
-            return runner(self.run_async())
+            return runner(self._run_with_sigint())
         except asyncio.CancelledError:
             if self.cancel is not None and self.cancel.is_set():
                 raise RepackageCancelled('stopped (cancel event)') from None
             raise
+
+    async def _run_with_sigint(self) -> RepackageResult:
+        """run_async(); before Python 3.11, Ctrl-C (SIGINT) cancels it like asyncio.run() does since 3.11, so that it
+        stops at an await (and aborts the current file) instead of wherever KeyboardInterrupt is raised."""
+        if sys.version_info >= (3, 11):
+            return await self.run_async()
+        loop = asyncio.get_running_loop()
+        task = asyncio.current_task()
+        interrupted = []
+
+        def on_sigint():
+            interrupted.append(True)
+            task.cancel()
+
+        try:
+            loop.add_signal_handler(signal.SIGINT, on_sigint)
+        except (NotImplementedError, RuntimeError, ValueError):  # Windows, or not the main thread
+            return await self.run_async()
+        try:
+            return await self.run_async()
+        except asyncio.CancelledError:
+            if interrupted:
+                raise KeyboardInterrupt from None
+            raise
+        finally:
+            loop.remove_signal_handler(signal.SIGINT)
 
     async def _watch_cancel(self, pipeline: asyncio.Task) -> None:
         """Cancel the pipeline once the cancel event is set."""
@@ -226,6 +263,7 @@ class Repackager:
         loop = asyncio.get_running_loop()
 
         def drain() -> int:
+            threading.current_thread().name = SOURCE_THREAD_NAME
             count = 0
             for job in self.source.iter_range_jobs():
                 if stop.is_set():
