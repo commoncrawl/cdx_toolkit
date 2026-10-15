@@ -1,9 +1,9 @@
 """End-to-end tests of the SQL indexes (DuckDB, Athena): `cdxt index ... | cdxt repackage`.
 
 By default, DuckDB queries a local columnar index (the local_url_index fixture) and the WARC records are
-served by the mocked data.commoncrawl.org (see tests/conftest.py). With CDXT_LIVE_TESTS=1, the live tests
-query Common Crawl's index on S3 (DuckDB) or with Athena, only a single crawl partition for a single host
-(cheap, partition-pruned -- never an all-crawls scan), and fetch the WARC records over HTTP.
+served by the mocked data.commoncrawl.org (see tests/conftest.py). With CDXT_LIVE_TESTS=s3 or athena, the live
+tests query Common Crawl's index on S3 (DuckDB) or with Athena, only a single crawl partition for a single host
+(cheap, partition-pruned -- never an all-crawls scan), and fetch the WARC records from s3://commoncrawl.
 """
 import json
 import os
@@ -15,12 +15,13 @@ from warcio.archiveiterator import ArchiveIterator
 from cdx_toolkit.cli import main
 from tests.conftest import (
     LOCAL_INDEX_CRAWL, LOCAL_INDEX_HOST, TEST_ATHENA_S3_LOCATION, mock_response_from_jsonl, requires_aws_athena,
-    requires_duckdb, requires_live_aws,
+    requires_duckdb, requires_live_s3,
 )
 
 
 CRAWL = 'CC-MAIN-2026-17'
 HOST = 'commoncrawl.org'
+S3_PREFIX = 's3://commoncrawl'
 ATHENA = f'athena://athena.us-east-1.amazonaws.com/ccindex?S3OutputLocation={TEST_ATHENA_S3_LOCATION}'
 
 
@@ -37,7 +38,7 @@ def mocked(mock_data_commoncrawl):
         mock_response_from_jsonl('test_get_cc_endpoints', 'test_cc')
 
 
-def _index_and_repackage(tmpdir, index_args, host=HOST):
+def _index_and_repackage(tmpdir, index_args, host=HOST, warc_download_prefix=None):
     captures_path = os.path.join(str(tmpdir), 'captures.jsonl')
     main(args=['index'] + index_args + ['-o', captures_path])
 
@@ -47,7 +48,8 @@ def _index_and_repackage(tmpdir, index_args, host=HOST):
     assert all(host in c['url'] for c in captures)
 
     base_prefix = str(tmpdir)
-    main(args=['repackage', captures_path, f'--prefix={base_prefix}/TEST_sql'])
+    prefix_args = ['--warc-download-prefix', warc_download_prefix] if warc_download_prefix else []
+    main(args=['repackage', captures_path, f'--prefix={base_prefix}/TEST_sql'] + prefix_args)
 
     response_count = 0
     with fsspec.open(os.path.join(base_prefix, 'TEST_sql-001.warc.gz'), 'rb') as stream:
@@ -102,22 +104,24 @@ def test_index_duckdb_local_sql_e2e(tmpdir, local_url_index):
 
 @requires_aws_athena
 def test_index_athena_e2e(tmpdir):
-    _index_and_repackage(tmpdir, [ATHENA, '--crawl', CRAWL, '--hostname', HOST])
+    _index_and_repackage(tmpdir, [ATHENA, '--crawl', CRAWL, '--hostname', HOST], warc_download_prefix=S3_PREFIX)
 
 
-@requires_live_aws
+@requires_live_s3
 @requires_duckdb
 def test_index_duckdb_e2e(tmpdir):
-    _index_and_repackage(tmpdir, ['cc-url-index-s3', '--crawl', CRAWL, '--hostname', HOST])
+    _index_and_repackage(tmpdir, ['cc-url-index-s3', '--crawl', CRAWL, '--hostname', HOST],
+                         warc_download_prefix=S3_PREFIX)
 
 
-@requires_live_aws
+@requires_live_s3
 @requires_duckdb
 def test_index_duckdb_domain_e2e(tmpdir):
-    _index_and_repackage(tmpdir, ['cc-url-index-s3', '--crawl', CRAWL, '--domain', HOST, '--limit', '20'])
+    _index_and_repackage(tmpdir, ['cc-url-index-s3', '--crawl', CRAWL, '--domain', HOST, '--limit', '20'],
+                         warc_download_prefix=S3_PREFIX)
 
 
-@requires_live_aws
+@requires_live_s3
 @requires_duckdb
 def test_index_duckdb_sql_e2e(tmpdir):
     sql = os.path.join(str(tmpdir), 'query.sql')
@@ -128,4 +132,4 @@ def test_index_duckdb_sql_e2e(tmpdir):
             WHERE url_host_name = '{HOST}'
             LIMIT 10
         """)
-    _index_and_repackage(tmpdir, ['cc-url-index-s3', '--sql', sql, '--yes'])
+    _index_and_repackage(tmpdir, ['cc-url-index-s3', '--sql', sql, '--yes'], warc_download_prefix=S3_PREFIX)

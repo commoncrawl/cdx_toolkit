@@ -2,11 +2,15 @@
 
 By default, the tests make no remote requests:
 - the CDX API and HTTP requests (data.commoncrawl.org) are mocked with `responses` and recorded data
-  (CDXT_DISABLE_MOCK_RESPONSES=1 sends them to the real servers, see mock_response_from_jsonl)
+  (see mock_response_from_jsonl)
 - S3 is a local moto server (see the s3_env fixture and requires_aws_s3)
+- Hugging Face reads are faked in the tests that need them
 
-CDXT_LIVE_TESTS=1 runs the S3 tests against AWS instead, and enables the tests that need AWS and
-cannot be mocked (Athena, DuckDB over s3://commoncrawl; see requires_live_aws).
+CDXT_LIVE_TESTS is a comma-separated list of the services to test live instead (see LIVE_SERVICES), or `all`:
+- http: the CDX API and HTTP requests go to the real servers
+- s3: the S3 tests run against AWS, and the tests of DuckDB over s3://commoncrawl run (requires_live_s3)
+- athena: the Athena tests run (requires_aws_athena)
+- hf: the tests of the Hugging Face Storage Bucket hf://buckets/commoncrawl/commoncrawl run (requires_live_hf)
 """
 import gzip
 import json
@@ -17,7 +21,6 @@ import urllib.request
 from pathlib import Path
 import pytest
 
-from cdx_toolkit.settings import CACHE_DIR
 
 try:
     import boto3
@@ -50,6 +53,12 @@ except ImportError:  # pragma: no cover - exercised in minimal installs
     _HAS_DUCKDB = False
 
 try:
+    import huggingface_hub  # noqa: F401
+    _HAS_HF = True
+except ImportError:  # pragma: no cover - exercised in minimal installs
+    _HAS_HF = False
+
+try:
     import aioboto3  # noqa: F401
     _HAS_AIOBOTO3 = True
 except ImportError:  # pragma: no cover - exercised in minimal installs
@@ -67,7 +76,6 @@ from typing import Dict, Optional
 import requests
 import responses
 import base64
-import shutil
 
 from unittest.mock import patch
 
@@ -76,9 +84,25 @@ TEST_DATA_BASE_PATH = Path(__file__).parent / 'data'
 TEST_S3_BUCKET = os.environ.get('CDXT_TEST_S3_BUCKET', 'commoncrawl-ci-temp')
 TEST_ATHENA_S3_LOCATION = 's3://commoncrawl-ci-temp/athena-results/'
 TEST_ATHENA_DATABASE = 'ccindex'
-DISABLE_ATHENA_TESTS = bool(os.environ.get('CDXT_DISABLE_ATHENA_TESTS', False))
-DISABLE_S3_TESTS = bool(os.environ.get('CDXT_DISABLE_S3_TESTS', False))
-LIVE_TESTS = bool(os.environ.get('CDXT_LIVE_TESTS', False))
+# a writable Hugging Face Storage Bucket (namespace/name) for the hf:// output tests (with CDXT_LIVE_TESTS=hf)
+TEST_HF_BUCKET = os.environ.get('CDXT_TEST_HF_BUCKET', 'commoncrawl/commoncrawl-ci-temp')
+
+LIVE_SERVICES = ('http', 's3', 'athena', 'hf')
+
+
+def _live_services(value: str) -> frozenset:
+    """The services of CDXT_LIVE_TESTS (comma-separated, or `all`)."""
+    names = {name.strip() for name in value.split(',') if name.strip()}
+    if 'all' in names:
+        return frozenset(LIVE_SERVICES)
+    unknown = names - set(LIVE_SERVICES)
+    if unknown:
+        raise ValueError(f'CDXT_LIVE_TESTS: unknown service(s) {", ".join(sorted(unknown))}; '
+                         f'use a comma-separated list of {", ".join(LIVE_SERVICES)}, or all')
+    return frozenset(names)
+
+
+LIVE_TESTS = _live_services(os.environ.get('CDXT_LIVE_TESTS', ''))
 
 # Cache for AWS S3/Athena access check to avoid repeated network calls
 _aws_s3_access_cache = None
@@ -86,11 +110,15 @@ _aws_athena_access_cache = None
 
 
 @pytest.fixture(scope='session', autouse=True)
-def cleanup_cache():
-    """Delete cache directory before each test to ensure clean state"""
-    cache_dir = os.path.expanduser(CACHE_DIR)
-    if os.path.exists(cache_dir):
-        shutil.rmtree(cache_dir)
+def cache_dir(tmp_path_factory):
+    """An empty cache directory for the tests: the user's cache (CDXT_CACHE_DIR) keeps its list of crawls, and gets
+    none of the recorded ones. Also set in the environment, for worker processes."""
+    cache = str(tmp_path_factory.mktemp('cdxt-cache')) + '/'
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr('cdx_toolkit.settings.CACHE_DIR', cache)
+        mp.setattr('cdx_toolkit.commoncrawl.CACHE_DIR', cache)
+        mp.setenv('CDXT_CACHE_DIR', cache)
+        yield cache
 
 
 @pytest.fixture(scope='session', autouse=True)
@@ -125,11 +153,11 @@ def check_aws_s3_access():
     return _aws_s3_access_cache
 
 
-def requires_live_aws(func):
-    """Pytest decorator for tests that need AWS itself (not mockable, e.g. DuckDB over s3://commoncrawl):
-    they only run with CDXT_LIVE_TESTS=1 and AWS S3 access."""
-    if not LIVE_TESTS:
-        return pytest.mark.skip(reason='needs AWS; set CDXT_LIVE_TESTS=1 to run it')(func)
+def requires_live_s3(func):
+    """Pytest decorator for tests that need AWS S3 itself (not mockable, e.g. DuckDB over s3://commoncrawl):
+    they only run with CDXT_LIVE_TESTS=s3 and AWS S3 access."""
+    if 's3' not in LIVE_TESTS:
+        return pytest.mark.skip(reason='needs AWS S3; set CDXT_LIVE_TESTS=s3 to run it')(func)
     if not _HAS_BOTOCORE or not _HAS_FSSPEC:
         return pytest.mark.skip(reason='S3 dependencies are not installed; install cdx_toolkit[s3]')(func)
     return pytest.mark.usefixtures('live_aws_s3_access')(func)
@@ -138,17 +166,15 @@ def requires_live_aws(func):
 @pytest.fixture
 def live_aws_s3_access():
     """Skip the test without AWS S3 access; checked when a test needs it (not when the tests are collected)."""
-    if DISABLE_S3_TESTS:
-        pytest.skip('AWS S3 access is disabled via environment variable.')
     if not check_aws_s3_access():
         pytest.skip('AWS S3 access not available (no credentials or permissions)')
 
 
 def requires_aws_s3(func):
     """Pytest decorator for S3 tests: they run against a local moto server (the s3_env fixture), or against
-    AWS with CDXT_LIVE_TESTS=1."""
-    if LIVE_TESTS:
-        return pytest.mark.usefixtures('s3_env')(requires_live_aws(func))
+    AWS with CDXT_LIVE_TESTS=s3."""
+    if 's3' in LIVE_TESTS:
+        return pytest.mark.usefixtures('s3_env')(requires_live_s3(func))
     if not _HAS_MOTO:
         return pytest.mark.skip(reason='moto, s3fs and aioboto3 are needed to mock S3; install cdx_toolkit[all]')(func)
     return pytest.mark.usefixtures('s3_env')(func)
@@ -197,9 +223,9 @@ def check_aws_athena_access():
 
 
 def requires_aws_athena(func):
-    """Pytest decorator that skips test if AWS Athena access is not available (needs CDXT_LIVE_TESTS=1)."""
-    if not LIVE_TESTS:
-        return pytest.mark.skip(reason='needs AWS Athena; set CDXT_LIVE_TESTS=1 to run it')(func)
+    """Pytest decorator that skips test if AWS Athena access is not available (needs CDXT_LIVE_TESTS=athena)."""
+    if 'athena' not in LIVE_TESTS:
+        return pytest.mark.skip(reason='needs AWS Athena; set CDXT_LIVE_TESTS=athena to run it')(func)
     if not _HAS_BOTO3:
         return pytest.mark.skipif(
             True, reason='S3 dependencies are not installed; install cdx_toolkit[s3] to enable Athena tests.'
@@ -211,10 +237,18 @@ def requires_aws_athena(func):
 @pytest.fixture
 def live_aws_athena_access():
     """Skip the test without AWS Athena access; checked when a test needs it (not when the tests are collected)."""
-    if DISABLE_ATHENA_TESTS:
-        pytest.skip('AWS Athena access is disabled via environment variable.')
     if not check_aws_athena_access():
         pytest.skip('AWS Athena access not available (no credentials or permissions)')
+
+
+def requires_live_hf(func):
+    """Pytest decorator for tests of the Hugging Face Storage Bucket hf://buckets/commoncrawl/commoncrawl: they only
+    run with CDXT_LIVE_TESTS=hf (public reads need no token, but have lower rate limits without one)."""
+    if 'hf' not in LIVE_TESTS:
+        return pytest.mark.skip(reason='needs Hugging Face; set CDXT_LIVE_TESTS=hf to run it')(func)
+    if not _HAS_HF:
+        return pytest.mark.skip(reason='huggingface_hub is not installed; install cdx_toolkit[hf]')(func)
+    return func
 
 
 def requires_duckdb(func):
@@ -253,9 +287,9 @@ def _data_commoncrawl_range(request):
 @pytest.fixture
 def mock_data_commoncrawl():
     """WARC record downloads from data.commoncrawl.org are served from recorded data (unless
-    CDXT_DISABLE_MOCK_RESPONSES=1); other requests made with `requests` fail, unless the test adds mock data (e.g.
+    CDXT_LIVE_TESTS=http); other requests made with `requests` fail, unless the test adds mock data (e.g.
     with mock_response_from_jsonl)."""
-    if os.environ.get('CDXT_DISABLE_MOCK_RESPONSES'):
+    if 'http' in LIVE_TESTS:
         yield None
         return
     responses.start()
@@ -325,7 +359,7 @@ class InlineExecutor:
 
 class S3Env:
     """S3 for a test: a local moto server with the buckets commoncrawl (the WARC files of WARC_RECORDS) and
-    TEST_S3_BUCKET, or AWS itself (CDXT_LIVE_TESTS=1)."""
+    TEST_S3_BUCKET, or AWS itself (CDXT_LIVE_TESTS=s3)."""
 
     def __init__(self, offsets=None):
         # (filename, offset) -> offset in the mocked WARC file, which holds only the recorded records
@@ -356,7 +390,7 @@ def moto_server():
 def s3_env(request, monkeypatch, tmp_path):
     """S3 for a test, see S3Env. The moto server is configured with environment variables only, so that also
     worker processes (cdxt repackage --processes) use it."""
-    if LIVE_TESTS:
+    if 's3' in LIVE_TESTS:
         yield S3Env()
         return
 
@@ -425,6 +459,19 @@ def s3_tmpdir(s3_env):
         pass
 
 
+@pytest.fixture
+def hf_tmpdir():
+    """A temporary path in the Hugging Face Storage Bucket TEST_HF_BUCKET (CDXT_LIVE_TESTS=hf), removed afterwards."""
+    from huggingface_hub import HfFileSystem
+
+    path = f'buckets/{TEST_HF_BUCKET}/cdx_toolkit/ci/tmpdirs/{uuid.uuid4().hex}'
+    yield f'hf://{path}'
+    try:
+        HfFileSystem().rm(path, recursive=True)
+    except Exception:  # noqa: BLE001 - cleanup only; nothing written, or no permission
+        pass
+
+
 def flexible_param_matcher(expected_params):
     """Custom matcher that ignores dynamic 'from' parameter timestamps and casts all values to strings"""
 
@@ -472,7 +519,7 @@ def mock_response_from_jsonl(mock_data_name, mock_data_dir: Optional[str] = None
     (if you run this from a whitelisted IP address), the following environment variable can be set:
 
     ```bash
-    export CDXT_DISABLE_MOCK_RESPONSES=1
+    export CDXT_LIVE_TESTS=http
     ```
 
     If the remote APIs change, new mock data can be semi-automatically collected
@@ -480,7 +527,7 @@ def mock_response_from_jsonl(mock_data_name, mock_data_dir: Optional[str] = None
     and overwriting existing mock data in `tests/data/mock_responses`:
 
     ```bash
-    # set environment variable (CDXT_DISABLE_MOCK_RESPONSES should not be set)
+    # set environment variable (CDXT_LIVE_TESTS should not have http)
     export CDXT_SAVE_MOCK_RESPONSES=./tmp/mock_responses
 
     # run the test for what mock data should be saved to $CDXT_SAVE_MOCK_RESPONSES/<test_file>/<test_func>.jsonl
@@ -527,7 +574,7 @@ def mock_response_from_jsonl(mock_data_name, mock_data_dir: Optional[str] = None
 
 
 def conditional_mock_responses(func=None, *, auto_mock_data: bool = True):
-    """Conditionally applies @responses.activate and auto-loads mock data based on CDXT_DISABLE_MOCK_RESPONSES env var.
+    """Applies @responses.activate and auto-loads mock data, unless CDXT_LIVE_TESTS has http.
 
     The mock data is automatically loaded from JSONL file from the tests/data directory
     and dependinng on the test module and test function.
@@ -537,8 +584,8 @@ def conditional_mock_responses(func=None, *, auto_mock_data: bool = True):
     """
 
     def decorator(f):
-        # If the flag CDXT_DISABLE_MOCK_RESPONSES is not detected, response mocking remains enabled
-        if not os.environ.get('CDXT_DISABLE_MOCK_RESPONSES'):
+        # without CDXT_LIVE_TESTS=http, the responses are mocked
+        if 'http' not in LIVE_TESTS:
             # Add responses.activate
             f = add_mock_responses(f, auto_mock_data=auto_mock_data)
 
