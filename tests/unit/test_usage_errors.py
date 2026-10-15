@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from cdx_toolkit.cli import main
-from cdx_toolkit.indexes import IndexQuery, UsageError
+from cdx_toolkit.indexes import IndexQuery, UsageError, open_index
 from cdx_toolkit.indexes.backends.cdx_api import CdxApiBackend
 from cdx_toolkit.indexes.backends.cdx_files import CdxFilesBackend, load_url_patterns
 from cdx_toolkit.indexes.patterns import domain_entry_to_surts, url_pattern_to_surts
@@ -120,3 +120,21 @@ def test_parquet_batches_exactly_full(tmp_path, monkeypatch):
     path = str(tmp_path / 'r.parquet')
     assert write_records(iter([{'url': str(i)} for i in range(4)]), path, 'parquet') == 4
     assert [r['url'] for r in read_records(path)] == ['0', '1', '2', '3']
+
+
+@pytest.mark.parametrize('index', ['ia', 'https://example.org/cdx', 'index.cdx', 'cc-url-index-s3', 'x.parquet',
+                                   'athena://athena.us-east-1.amazonaws.com/ccindex?S3OutputLocation=s3://b/'])
+@pytest.mark.parametrize('option', [['--cc-mirror', 'https://mirror.example.org/'], ['--cc-sort', 'ascending']])
+def test_cc_options_only_for_cc(capsys, index, option):
+    with pytest.raises(SystemExit) as e:
+        main(['index', index, '--domain', 'example.com', '--dry-run'] + option)
+    assert e.value.code == 2
+    assert f'{option[0]} can only be used with the Common Crawl CDX API (cc)' in capsys.readouterr().err
+
+    with pytest.raises(UsageError, match=option[0]):
+        open_index(index, **{option[0][2:].replace('-', '_'): option[1]})
+
+
+def test_cc_options_are_passed_on():
+    backend = open_index('cc', cc_mirror='https://mirror.example.org/', cc_sort='ascending', assume_yes=True)
+    assert (backend.cc_mirror, backend.cc_sort) == ('https://mirror.example.org/', 'ascending')

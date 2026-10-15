@@ -92,7 +92,9 @@ or `*.example.com`, or an exact URL), `--hostname` (an exact hostname like
 These can be repeated and combined; a capture is selected if it
 matches any of them. All other options, like `--crawl`, `--from`,
 `--to`, `--filter` and `--url-fgrep`, narrow the selection down.
-Options an index does not support (e.g. `--filter` with DuckDB) are rejected.
+Options an index does not support (e.g. `--filter` with DuckDB, or `--cc-mirror`
+and `--cc-sort` with any other index than `cc`) are rejected; `--yes` is
+accepted by every index (only the SQL indexes ask for confirmation).
 For CDX files and the SQL indexes, `--url` patterns are matched against SURT
 keys (`url_surtkey` in the columnar index), like the CDX API does: `www.` is
 ignored, so `--url 'example.com/*'` also matches `www.example.com`, while

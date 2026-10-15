@@ -58,12 +58,17 @@ def open_index(
     - anything else (local or remote CDX files, globs) -> CDX files
 
     `backend` ('cdx-api', 'cdx-files', 'duckdb' or 'athena') overrides the detection, e.g. 'cdx-files' for a CDX
-    file at an http(s) URL without file extension.
+    file at an http(s) URL without file extension. `cc_mirror` and `cc_sort` are options of the Common Crawl CDX
+    API ('cc') and rejected for other indexes; `assume_yes` is accepted by all (only SQL indexes ask).
     """
     if backend not in INDEX_BACKENDS:
         raise UsageError(f'unknown index backend {backend!r} (choose from {", ".join(INDEX_BACKENDS)})')
     if backend == 'auto':
         backend = detect_index_backend(location)
+    if (cc_mirror is not None or cc_sort is not None) and not (backend == 'cdx-api' and location == 'cc'):
+        options = ' and '.join(name for name, value in (('--cc-mirror', cc_mirror), ('--cc-sort', cc_sort))
+                               if value is not None)
+        raise UsageError(f'{options} can only be used with the Common Crawl CDX API (cc), not with {location}')
     location = INDEX_ALIASES.get(location, location)
 
     if backend == 'athena':
