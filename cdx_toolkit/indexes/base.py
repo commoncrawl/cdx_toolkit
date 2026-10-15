@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from itertools import islice
 import logging
-from typing import FrozenSet, Iterable, Iterator, Mapping
+from typing import FrozenSet, Iterable, Iterator, List, Mapping
 
 from .query import IndexQuery, field_flag
 
@@ -40,6 +40,10 @@ class IndexBackend(ABC):
             raise UsageError(f'{options} cannot be used with the {self.name} index')
         if query.limit is not None and query.limit < 1:
             raise UsageError(f'--limit must be at least 1, not {query.limit}')
+
+    def input_locations(self, query: IndexQuery) -> List[str]:
+        """The files (paths, directories or globs) the query reads, which an output must not overwrite."""
+        return []
 
     @abstractmethod
     def plan(self, query: IndexQuery) -> QueryPlan:

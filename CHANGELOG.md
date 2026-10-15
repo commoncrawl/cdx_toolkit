@@ -19,8 +19,8 @@
 	+ `hf://` WARC reads resolve each WARC file once and read its records from the signed CDN URL
 	  (one HF Resolvers rate-limit request per WARC file instead of per record)
 	+ `cdxt index` reads CDX files (local or remote, globs): `--url`/`--hostname`/`--domain`/`--url-file` matched as SURT
-	  prefixes (`--url-file-type domain` for host lists), one output per CDX file for an `-o` path without extension,
-	  `--processes`
+	  prefixes (`--url-file-type domain` for host lists), one output per CDX file for an `-o` path without extension
+	  (a new or empty directory), `--processes`; `cdxt index` refuses an output that would overwrite its input
 	+ SQL indexes: `--url` patterns (matched against `url_surtkey`), `--from`/`--to` (fetch time), `--language` (primary content language, three-letter ISO 639-3 codes)
 	+ SQL indexes: `--hostname`, `--domain` and `--url` select by `url_host_name_reversed`, which follows the sort order
 	  of the index, so DuckDB (and Athena) skip the row groups of other hosts by their min/max statistics; `--domain` no

@@ -6,14 +6,17 @@ Parquet needs the optional pyarrow dependency (cdx_toolkit[parquet]) and a file 
 '''
 import contextlib
 import csv
+import fnmatch
 import itertools
 import json
+import os
 import re
 import sys
 import tempfile
 from typing import IO, Iterable, Iterator, List, Mapping, Optional, Tuple
 
 import fsspec
+from fsspec.implementations.local import LocalFileSystem
 
 
 TEXT_FORMATS = ('jsonl', 'cdxj', 'csv', 'tsv')
@@ -128,6 +131,47 @@ def check_glob(path: str) -> None:
             f'globs do not work with http(s) URLs ({path}), because they cannot list files; '
             'use e.g. s3://commoncrawl/... (needs AWS credentials) or one URL per file'
         )
+
+
+def overlaps(output: str, location: str) -> bool:
+    """Whether writing `output` can overwrite `location` (a file, a directory or a glob), or the other way around:
+    the same file (also through symlinks or hard links), a file in the directory, or a file matching the glob."""
+    if output == '-' or location == '-':
+        return False
+    protocols = {fsspec.core.split_protocol(path)[0] or 'file' for path in (output, location)}
+    if len(protocols) > 1 and protocols != {'file', 'local'}:
+        return False
+    out_fs, out_path = fsspec.url_to_fs(output)
+    in_fs, in_path = fsspec.url_to_fs(location)
+    if type(out_fs) is not type(in_fs):
+        return False
+    if isinstance(out_fs, LocalFileSystem):
+        out_real = os.path.normcase(os.path.realpath(out_path))
+        for path in (in_fs.glob(in_path) if is_glob(in_path) else [in_path]):
+            real = os.path.normcase(os.path.realpath(path))
+            if out_real == real or out_real.startswith(real.rstrip(os.sep) + os.sep) \
+                    or real.startswith(out_real.rstrip(os.sep) + os.sep):
+                return True
+            if os.path.exists(out_path) and os.path.exists(path) and os.path.samefile(out_path, path):
+                return True
+        return False
+    # remote: compare the paths (a glob matches across '/', which rejects rather too much than too little)
+    out_path, in_path = out_path.rstrip('/'), in_path.rstrip('/')
+    return (
+        out_path == in_path or out_path.startswith(in_path + '/') or in_path.startswith(out_path + '/')
+        or (is_glob(in_path) and fnmatch.fnmatchcase(out_path, in_path))
+    )
+
+
+def is_empty_dir(path: str) -> bool:
+    """Whether a local or remote path is missing or an empty directory (for S3, a prefix without objects)."""
+    fs, fs_path = fsspec.url_to_fs(path)
+    try:
+        return not fs.ls(fs_path.rstrip('/'), detail=False)
+    except FileNotFoundError:
+        return True
+    except NotADirectoryError:
+        return False
 
 
 def expand_paths(path: str) -> List[str]:

@@ -1,9 +1,12 @@
 import io
 import json
+import os
 
 import pytest
 
-from cdx_toolkit.record_io import RecordWriter, format_from_path, is_glob, read_records, sniff_format, write_records
+from cdx_toolkit.record_io import (
+    RecordWriter, format_from_path, is_empty_dir, is_glob, overlaps, read_records, sniff_format, write_records,
+)
 
 
 RECORDS = [
@@ -188,3 +191,43 @@ def test_csv_of_capture_objects(tmp_path):
         {'url': 'http://example.com/', 'status': '200', 'redirect': ''},
         {'url': 'http://example.com/x', 'status': '200', 'redirect': 'y'},
     ]
+
+
+def test_overlaps_local(tmp_path):
+    (tmp_path / 'in').mkdir()
+    (tmp_path / 'in' / 'a.cdx').write_text('x\n')
+    a = str(tmp_path / 'in' / 'a.cdx')
+    assert overlaps(a, a)
+    assert overlaps(str(tmp_path / 'in' / '.' / 'a.cdx'), a)
+    assert overlaps(a, str(tmp_path / 'in' / '*.cdx'))
+    assert overlaps(str(tmp_path / 'in'), str(tmp_path / 'in' / '*.cdx'))  # a directory with the inputs
+    assert overlaps(str(tmp_path / 'in' / 'b.cdx'), str(tmp_path / 'in'))  # a file in the input directory
+    assert not overlaps(str(tmp_path / 'in' / 'b.cdx'), str(tmp_path / 'in' / '*.cdx'))  # no such input (yet)
+    assert not overlaps(str(tmp_path / 'in2'), str(tmp_path / 'in'))
+    assert not overlaps('-', a) and not overlaps(a, '-')
+    assert not overlaps('memory://in/a.cdx', a)
+
+    os.link(a, tmp_path / 'hard.cdx')
+    assert overlaps(str(tmp_path / 'hard.cdx'), a)
+    try:
+        os.symlink(a, tmp_path / 'link.cdx')
+    except OSError:  # Windows without the privilege
+        return
+    assert overlaps(str(tmp_path / 'link.cdx'), str(tmp_path / 'in' / '*.cdx'))
+
+
+def test_overlaps_remote():
+    assert overlaps('memory://in/a.cdx', 'memory://in/a.cdx')
+    assert overlaps('memory://in/a.cdx', 'memory://in/*.cdx')
+    assert overlaps('memory://in/sub/a.cdx', 'memory://in/')
+    assert overlaps('memory://in', 'memory://in/*.cdx')
+    assert not overlaps('memory://in/a.jsonl', 'memory://in/*.cdx')
+    assert not overlaps('memory://in2/a.cdx', 'memory://in/a.cdx')
+
+
+def test_is_empty_dir(tmp_path):
+    assert is_empty_dir(str(tmp_path / 'missing'))
+    assert is_empty_dir(str(tmp_path))
+    (tmp_path / 'f').write_text('x')
+    assert not is_empty_dir(str(tmp_path))
+    assert not is_empty_dir(str(tmp_path / 'f'))

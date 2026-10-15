@@ -296,7 +296,7 @@ The `repackage` command of the unreleased `feat/warc-range-sources` branch (#73)
 | `--hf-reader fsspec\|cdn` | removed; `hf://` WARCs are always read from the CDN, with one rate-limited `/resolve/` request per WARC file instead of per record (`fsspec` was ~10x slower and dropped records under load in the benchmarks) |
 | `--processes`, `--warc-download-prefix`, `--prefix`, `--subprefix`, `--size`, `--creator`, `--operator`, `--is-part-of`, `--description` | unchanged (`--size` also accepts e.g. `1GB`) |
 | `cdxt filter_cdx INPUT_BASE FILTER_FILE OUTPUT_BASE --input-glob GLOB --parallel N` | `cdxt index 'INPUT_BASE/GLOB' --url-file FILTER_FILE -o OUTPUT_BASE --processes N` (one output per CDX file). Add `--url-file-type domain` to match the entries like `--filter-type url` did (`example.com` = the domain with subdomains, entries with a path = URL prefixes); without it, the entries are URL patterns like `--url` |
-| `--filter-type surt`, `--overwrite`, `--limit` (per file) | removed; outputs are overwritten, `--limit` only works with a single output |
+| `--filter-type surt`, `--overwrite`, `--limit` (per file) | removed; the output directory has to be new or empty, `--limit` only works with a single output |
 
 ## Python API
 

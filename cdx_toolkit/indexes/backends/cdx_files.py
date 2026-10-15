@@ -12,7 +12,9 @@ from dataclasses import dataclass
 from itertools import islice
 from typing import Iterator, List, Mapping, NamedTuple, Optional, Tuple
 
-from cdx_toolkit.record_io import check_glob, format_from_path, is_glob, open_text, parse_cdxj_line, read_records
+from cdx_toolkit.record_io import (
+    check_glob, format_from_path, is_empty_dir, is_glob, open_text, parse_cdxj_line, read_records,
+)
 from cdx_toolkit.timeutils import pad_timestamp, pad_timestamp_up
 
 from ..base import IndexBackend, QueryPlan, UsageError
@@ -210,6 +212,9 @@ class CdxFilesBackend(IndexBackend):
         for pattern in query.urls:
             url_pattern_to_surts(pattern)
 
+    def input_locations(self, query: IndexQuery) -> List[str]:
+        return [self.location] + ([query.url_file] if query.url_file else [])
+
     def files(self) -> List['CdxFile']:
         """The CDX files of the location (a file or a glob)."""
         import fsspec
@@ -247,6 +252,11 @@ class CdxFilesBackend(IndexBackend):
         self.validate(query)
         if query.limit:
             raise UsageError('--limit cannot be used when writing one output per CDX file')
+        if not is_empty_dir(output_base):
+            raise UsageError(
+                f'the output directory {output_base} is not empty; use a new directory, so that no output of an '
+                'earlier run is mixed with this one'
+            )
         capture_filter = CaptureFilter.from_query(query, url_filters=True)
         join = (lambda rel: output_base.rstrip('/') + '/' + rel) if '://' in output_base else \
             (lambda rel: os.path.join(output_base, *rel.split('/')))

@@ -118,5 +118,8 @@ class DuckDbBackend(SqlBackend):
         # hive-partitioned index directory: prune the crawls in the glob
         return build_from_clause(self.location, crawls), True
 
+    def input_locations(self, query):
+        return [self.location]
+
     def iter_sql_rows(self, sql):
         return iter_duckdb_rows(sql)

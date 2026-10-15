@@ -107,17 +107,22 @@ path like `example.com/reports` all URLs starting with it. The patterns are matc
 so long URL lists are fast. For DuckDB and Athena, join the index with a table
 of the URLs in a custom `--sql` query instead.
 
-With a glob of CDX files and an `-o` path without file extension, `cdxt index`
-writes one output per CDX file, with the same relative path and the selected
-lines unchanged (e.g. to filter a whole crawl's index for a URL list), and
-`--processes N` filters N files in parallel. No file is written for CDX files
-without matches:
+With a glob of CDX files and an `-o` path without file extension (or ending
+with `/`), `cdxt index` writes one output per CDX file, with the same relative
+path and the selected lines unchanged (e.g. to filter a whole crawl's index for
+a URL list), and `--processes N` filters N files in parallel. No file is
+written for CDX files without matches. The directory has to be new or empty, so
+that no output of an earlier run is mixed with this one:
 
 ```
 $ cdxt index 's3://commoncrawl/cc-index/collections/CC-MAIN-2024-30/indexes/cdx-*.gz' \
     --url-file eot-hosts.txt --url-file-type domain -o s3://my-bucket/eot/CC-MAIN-2024-30/indexes --processes 8
 $ cdxt repackage 's3://my-bucket/eot/CC-MAIN-2024-30/indexes/cdx-*.gz' --prefix EOT-2024
 ```
+
+An `-o` path with an unknown extension (e.g. `out.txt`) needs `--output-format`.
+`cdxt index` refuses an output that would overwrite one of the files the query
+reads (the CDX or Parquet files, the `--url-file`).
 
 The SQL indexes (DuckDB, Athena) also support `--language CODE` (repeatable):
 captures whose primary content language (the first of the `languages` field)

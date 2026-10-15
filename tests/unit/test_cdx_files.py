@@ -1,5 +1,6 @@
 import gzip
 import json
+import os
 import shutil
 
 import pytest
@@ -10,7 +11,7 @@ from cdx_toolkit.indexes.backends.cdx_files import CdxFilesBackend, load_url_pat
 from cdx_toolkit.indexes.patterns import domain_entry_to_surts, url_pattern_to_surts
 from cdx_toolkit.record_io import write_records
 
-from tests.conftest import TEST_DATA_PATH
+from tests.conftest import TEST_DATA_PATH, requires_aws_s3
 
 
 CDX_PATH = TEST_DATA_PATH / 'repackage' / 'filtered_CC-MAIN-2024-30_cdx-00187.gz'
@@ -223,3 +224,93 @@ def test_one_output_per_cdx_file_with_url_filters(tmp_path):
     expected = [line for line in LINES if line.startswith('fr,mnhn,') and '/taxonomy/' in url(line)]
     assert lines == [line for line in expected if '/term/1' not in url(line)]
     assert lines
+
+
+@pytest.mark.parametrize('output, inputs', [
+    ('in/a.cdx.gz', ['in/a.cdx.gz']),
+    ('./in/../in/a.cdx.gz', ['in/a.cdx.gz']),
+    ('hard.cdx.gz', ['in/a.cdx.gz']),
+    ('link.cdx.gz', ['in/a.cdx.gz']),
+    ('in/a.cdx.gz', ['in/*.cdx.gz']),
+    ('in', ['in/*.cdx.gz']),
+    ('urls.txt', ['in/a.cdx.gz', '--url-file', 'urls.txt']),
+])
+def test_output_must_not_overwrite_the_input(tmp_path, monkeypatch, capsys, output, inputs):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'in').mkdir()
+    shutil.copy(CDX_PATH, tmp_path / 'in' / 'a.cdx.gz')
+    (tmp_path / 'urls.txt').write_text('*.mnhn.fr\n')
+    os.link(tmp_path / 'in' / 'a.cdx.gz', tmp_path / 'hard.cdx.gz')
+    try:
+        os.symlink(tmp_path / 'in' / 'a.cdx.gz', tmp_path / 'link.cdx.gz')
+    except OSError:  # Windows without the privilege
+        if output == 'link.cdx.gz':
+            pytest.skip('no symlinks')
+    before = {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+
+    with pytest.raises(SystemExit) as e:
+        main(['index'] + inputs + ['--domain', 'mnhn.fr', '-o', output, '--output-format', 'cdxj'])
+    assert e.value.code == 2
+    assert 'would overwrite the input' in capsys.readouterr().err
+    assert {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
+
+
+@pytest.mark.parametrize('processes', [1, 2])
+def test_one_output_per_cdx_file_needs_an_empty_directory(tmp_path, capsys, processes):
+    out = tmp_path / 'out'
+    out.mkdir()  # empty: fine
+    main(['index', str(CDX_PATH), '--domain', 'mnhn.fr', '-o', str(out), '--processes', str(processes)])
+    output = out / CDX_PATH.name
+    first = output.read_bytes()
+    assert first
+
+    # a second run, even one that selects nothing, would leave the outputs of the first run in place
+    with pytest.raises(SystemExit) as e:
+        main(['index', str(CDX_PATH), '--domain', 'example.com', '-o', str(out), '--processes', str(processes)])
+    assert e.value.code == 2
+    assert 'is not empty' in capsys.readouterr().err
+    assert output.read_bytes() == first
+
+
+@pytest.mark.parametrize('output, per_file', [
+    ('out', True), ('out/', True), ('out.v2/', True), ('.out', True),
+    ('out.cdxj', False), ('out.jsonl.gz', False),
+])
+def test_one_output_per_cdx_file_only_without_file_extension(tmp_path, monkeypatch, output, per_file):
+    monkeypatch.chdir(tmp_path)
+    main(['index', str(CDX_PATH), '--domain', 'mnhn.fr', '-o', output])
+    assert (tmp_path / output).is_dir() == per_file
+
+
+@pytest.mark.parametrize('output', ['out.txt', 'out.gz', 'out.v2'])
+def test_unknown_output_extension(tmp_path, monkeypatch, capsys, output):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as e:
+        main(['index', str(CDX_PATH), '--domain', 'mnhn.fr', '-o', output])
+    assert e.value.code == 2
+    assert 'cannot detect the output format' in capsys.readouterr().err
+    assert not (tmp_path / output).exists()
+
+    main(['index', str(CDX_PATH), '--domain', 'mnhn.fr', '-o', output, '--output-format', 'jsonl'])
+    assert (tmp_path / output).is_file()
+
+
+@requires_aws_s3
+def test_output_checks_on_s3(s3_tmpdir, capsys):
+    import fsspec
+
+    fs = fsspec.filesystem('s3')
+    fs.put_file(str(CDX_PATH), f'{s3_tmpdir}/in/a.cdx.gz')
+    fs.pipe_file(f'{s3_tmpdir}/out/unrelated.txt', b'x')
+    for output, error in [
+        (f'{s3_tmpdir}/in/a.cdx.gz', 'would overwrite the input'),
+        (f'{s3_tmpdir}/in', 'would overwrite the input'),
+        (f'{s3_tmpdir}/out', 'is not empty'),
+    ]:
+        with pytest.raises(SystemExit):
+            main(['index', f'{s3_tmpdir}/in/*.cdx.gz', '--domain', 'mnhn.fr', '-o', output])
+        assert error in capsys.readouterr().err, output
+    assert fs.cat_file(f'{s3_tmpdir}/in/a.cdx.gz') == CDX_PATH.read_bytes()
+
+    main(['index', f'{s3_tmpdir}/in/*.cdx.gz', '--domain', 'mnhn.fr', '-o', f'{s3_tmpdir}/out2'])
+    assert fs.exists(f'{s3_tmpdir}/out2/a.cdx.gz')

@@ -94,3 +94,19 @@ def test_connection_setup_and_hf_filesystem(monkeypatch):
     assert "CREATE SECRET (TYPE s3, PROVIDER credential_chain, REGION 'us-east-1');" in statements
     con.register_filesystem.assert_called_once_with(hf_fs)
     con.close.assert_called_once()
+
+
+@pytest.mark.parametrize('output', ['index.parquet', 'idx/index.parquet', 'idx/new.parquet'])
+def test_output_must_not_overwrite_the_index(tmp_path, monkeypatch, capsys, output):
+    from cdx_toolkit.cli import main
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'idx').mkdir()
+    for path in ('index.parquet', 'idx/index.parquet'):
+        (tmp_path / path).write_bytes(b'PAR1')
+    location = 'idx/' if output.startswith('idx/') else 'index.parquet'
+    with pytest.raises(SystemExit) as e:
+        main(['index', location, '--index-backend', 'duckdb', '--domain', 'example.com', '-o', output])
+    assert e.value.code == 2
+    assert 'would overwrite the input' in capsys.readouterr().err
+    assert (tmp_path / 'index.parquet').read_bytes() == b'PAR1'

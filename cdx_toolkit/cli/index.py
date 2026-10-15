@@ -1,10 +1,11 @@
 from argparse import Namespace, RawDescriptionHelpFormatter
 import logging
+import posixpath
 
 from cdx_toolkit.indexes import IndexQuery, UsageError, open_index
 from cdx_toolkit.indexes.resolve import INDEX_BACKENDS
 from cdx_toolkit.record_io import (
-    FORMAT_CHOICES, canonical_format, format_from_path, import_pyarrow, open_text, write_records,
+    FORMAT_CHOICES, canonical_format, format_from_path, import_pyarrow, open_text, overlaps, write_records,
 )
 
 from .common import add_verbose_arg, parse_fields, positive_int
@@ -121,7 +122,8 @@ def add_parser(subparsers):
     output.add_argument(
         '-o', '--output', default='-', metavar='PATH',
         help=("output file, local or remote (e.g. s3://...), gzipped if it ends with .gz (default: '-' = stdout); "
-              'for CDX files, a path without file extension is a directory with one output per CDX file'),
+              'for CDX files, a path without file extension (or ending with /) is a new or empty directory with one '
+              'output per CDX file'),
     )
     output.add_argument(
         '--output-format', choices=FORMAT_CHOICES,
@@ -207,6 +209,14 @@ def get_output_format(args: Namespace) -> str:
     return fmt
 
 
+def is_directory_path(path: str) -> bool:
+    """A path ending with a slash, or whose last component has no file extension (e.g. out/, out, s3://b/out)."""
+    if path == '-':
+        return False
+    path = path.replace('\\', '/')
+    return path.endswith('/') or not posixpath.splitext(path.rsplit('/', 1)[-1])[1]
+
+
 def writes_per_file(args: Namespace, backend) -> bool:
     """CDX files with an output path without file extension: one output per CDX file."""
     from cdx_toolkit.indexes.backends.cdx_files import CdxFilesBackend
@@ -214,9 +224,15 @@ def writes_per_file(args: Namespace, backend) -> bool:
     return (
         isinstance(backend, CdxFilesBackend)
         and not (args.count or args.dry_run or args.output_format)
-        and args.output != '-'
-        and format_from_path(args.output) is None
+        and is_directory_path(args.output)
     )
+
+
+def check_output_is_not_input(output: str, backend, query: IndexQuery) -> None:
+    """Writing the output must not overwrite what the query reads (the inputs are read while it is written)."""
+    for location in backend.input_locations(query):
+        if overlaps(output, location):
+            raise UsageError(f'the output {output} would overwrite the input {location}; use another --output')
 
 
 def run(args: Namespace, cmdline: str):
@@ -224,6 +240,7 @@ def run(args: Namespace, cmdline: str):
         args.index, args.index_backend, cc_mirror=args.cc_mirror, cc_sort=args.cc_sort, assume_yes=args.yes
     )
     query = build_query(args)
+    check_output_is_not_input(args.output, backend, query)
 
     if writes_per_file(args, backend):
         if args.fields:
