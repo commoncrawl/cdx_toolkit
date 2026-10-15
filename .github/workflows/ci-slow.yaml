@@ -2,9 +2,10 @@ name: CI-slow
 
 on: workflow_dispatch
 
-# live tests (CDXT_LIVE_TESTS=s3,athena,hf): S3, Athena and DuckDB against AWS, and the Hugging Face Storage
-# Buckets (HF_TOKEN: writes to hf://buckets/commoncrawl/commoncrawl-ci-temp). The permissions are needed to get AWS
-# credentials via GitHub's OIDC token endpoint
+# live tests (CDXT_LIVE_TESTS=http,s3,athena,hf): the HTTP requests to the CDX APIs and data.commoncrawl.org, S3,
+# Athena and DuckDB against AWS, and the Hugging Face Storage Buckets (HF_TOKEN: writes to
+# hf://buckets/commoncrawl/commoncrawl-ci-temp). The permissions are needed to get AWS credentials via GitHub's OIDC
+# token endpoint
 permissions:
   id-token: write
   contents: read
@@ -59,7 +60,7 @@ jobs:
 
       - name: Run tests
         env:
-          CDXT_LIVE_TESTS: 's3,athena,hf'
+          CDXT_LIVE_TESTS: 'http,s3,athena,hf'
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           make test_coverage

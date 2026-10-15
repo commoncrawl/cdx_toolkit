@@ -54,7 +54,7 @@ To test services live instead, set `CDXT_LIVE_TESTS` to a comma-separated list o
 CDXT_LIVE_TESTS=s3,athena,hf make test
 ```
 
-The CI workflow of pull requests runs the mocked tests only; the `CI-slow` workflow (started manually) runs the live tests with AWS credentials.
+The CI workflow of pull requests runs the mocked tests only; the `CI-slow` workflow (started manually) runs all live tests (`http,s3,athena,hf`) with AWS credentials and `HF_TOKEN`.
 
 The WARC records that the `cdxt repackage` tests download (from `data.commoncrawl.org` or `s3://commoncrawl`) are recorded in `tests/data/repackage/warc_records.jsonl`, and DuckDB queries a small local index built from the same captures (the `local_url_index` fixture in `tests/conftest.py`).
 
