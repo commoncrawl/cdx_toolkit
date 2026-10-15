@@ -35,22 +35,11 @@ $ pip install cdx_toolkit[parquet] # Parquet output (and input of cdxt repackage
 $ pip install cdx_toolkit[all]     # install all optional dependencies
 ```
 
-### S3 settings
+### Settings
 
-For requests to S3 (e.g. `s3://commoncrawl`), `cdxt` uses Common Crawl's
-recommended AWS settings: region `us-east-1`, `retry_mode = adaptive`,
-`max_attempts = 100000`, and for S3 `addressing_style = virtual`,
-`payload_signing_enabled = false` and `max_concurrent_requests = 2`.
-Settings you configured yourself win: environment variables (`AWS_REGION`,
-`AWS_DEFAULT_REGION`, `AWS_RETRY_MODE`, `AWS_MAX_ATTEMPTS`), the AWS config file
-of your profile (`~/.aws/config`, `AWS_PROFILE`), and options in the fsspec
-configuration. `CDXT_AWS_DEFAULTS=0` turns the defaults off.
-
-The Athena client uses the same retry settings (its region is part of the
-`athena://` location). DuckDB has no adaptive retry mode and no limit for
-concurrent requests; for S3 it uses the region (`s3_region`), the addressing
-style (`s3_url_style`) and `max_attempts` (`http_retries`, with 1 second between
-retries).
+The AWS settings of S3, Athena and DuckDB requests, and the rate limits and retries of HTTP requests to
+Common Crawl and the Internet Archive (with their environment variables), are described in
+[docs/settings.md](docs/settings.md).
 
 ## Command-line tools
 
