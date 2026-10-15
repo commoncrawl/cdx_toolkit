@@ -7,7 +7,7 @@ import re
 from typing import List, Optional, Tuple
 
 from cdx_toolkit.commoncrawl import normalize_crawl, get_cc_endpoints, match_cc_crawls
-from cdx_toolkit.timeutils import pad_timestamp, pad_timestamp_up
+from cdx_toolkit.timeutils import timestamp_range
 
 from ..base import UsageError
 from ..patterns import domain_to_surts, normalize_host, url_pattern_to_surts
@@ -213,15 +213,13 @@ def resolve_crawl_names(crawl_arg) -> List[str]:
 def sql_timestamp(timestamp: str, end: bool = False) -> str:
     """CDX timestamp (e.g. 2008, 200906302359) -> SQL TIMESTAMP literal of its first second, or with `end`, of the
     second after its last second (an exclusive end, which includes the fractions of the last second)."""
-    if not re.fullmatch(r'\d{4,14}', timestamp):
-        raise UsageError(f'invalid timestamp {timestamp!r}, use e.g. 2008, 20080328 or 200906302359')
-    padded = pad_timestamp_up(timestamp) if end else pad_timestamp(timestamp)
     try:
-        moment = datetime.datetime.strptime(padded, '%Y%m%d%H%M%S')
-        if end:
-            moment += datetime.timedelta(seconds=1)
-    except (ValueError, OverflowError):
-        raise UsageError(f'invalid timestamp {timestamp!r}') from None
+        first, last = timestamp_range(timestamp)
+        moment = last + datetime.timedelta(seconds=1) if end else first
+    except ValueError as e:
+        raise UsageError(str(e)) from None
+    except OverflowError:  # the end of 9999
+        raise UsageError(f'invalid timestamp {timestamp!r} (too late)') from None
     return f"TIMESTAMP '{moment:%Y-%m-%d %H:%M:%S}'"
 
 

@@ -3,6 +3,8 @@ from itertools import islice
 import logging
 from typing import FrozenSet, Iterable, Iterator, List, Mapping
 
+from cdx_toolkit.timeutils import timestamp_range
+
 from .query import IndexQuery, field_flag
 
 
@@ -40,6 +42,12 @@ class IndexBackend(ABC):
             raise UsageError(f'{options} cannot be used with the {self.name} index')
         if query.limit is not None and query.limit < 1:
             raise UsageError(f'--limit must be at least 1, not {query.limit}')
+        for option, timestamp in (('--from', query.from_ts), ('--to', query.to), ('--closest', query.closest)):
+            if timestamp is not None:
+                try:
+                    timestamp_range(timestamp)
+                except ValueError as e:
+                    raise UsageError(f'{option}: {e}') from None
 
     def input_locations(self, query: IndexQuery) -> List[str]:
         """The files (paths, directories or globs) the query reads, which an output must not overwrite."""

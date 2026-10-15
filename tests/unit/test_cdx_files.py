@@ -317,3 +317,42 @@ def test_output_checks_on_s3(s3_tmpdir, capsys):
 
     main(['index', f'{s3_tmpdir}/in/*.cdx.gz', '--domain', 'mnhn.fr', '-o', f'{s3_tmpdir}/out2'])
     assert fs.exists(f'{s3_tmpdir}/out2/a.cdx.gz')
+
+
+@pytest.mark.parametrize('timestamp, valid', [
+    ('2024', True), ('202402', True), ('20240229', True), ('2024022923', True), ('202402292359', True),
+    ('20240229235959', True), ('2024080123595', True),
+    ('202400', False), ('202413', False), ('20230229', False), ('20240230', False), ('20240231', False),
+    ('2024022924', False), ('202402292360', False), ('20245', False), ('2024-01', False), ('202', False),
+    ('202402292359590', False), ('２０２４', False),
+])
+def test_timestamps_are_validated_by_every_backend(capsys, timestamp, valid):
+    """Invalid calendar dates are rejected (exit 2, no traceback) before a query, by CDX files, SQL and the API."""
+    for index in (str(CDX_PATH), 'cc-url-index-s3', 'cc'):
+        for option in ('--from', '--to'):
+            args = ['index', index, '--domain', 'example.com', option, timestamp, '--dry-run']
+            if valid:
+                main(args)
+                capsys.readouterr()
+            else:
+                with pytest.raises(SystemExit) as e:
+                    main(args)
+                assert e.value.code == 2
+                err = capsys.readouterr().err
+                assert f'{option}: invalid timestamp' in err and 'Traceback' not in err, (index, option)
+
+
+def test_cdx_files_and_sql_select_the_same_time_range(tmp_path, capsys):
+    """Leap day and end of month: the bounds of the file backend (string comparison) and SQL are the same."""
+    pytest.importorskip('duckdb')
+    from cdx_toolkit.indexes.backends.sql_builder import sql_timestamp
+
+    assert sql_timestamp('202402') == "TIMESTAMP '2024-02-01 00:00:00'"
+    assert sql_timestamp('202402', end=True) == "TIMESTAMP '2024-03-01 00:00:00'"
+    lines = [f'com,example)/ {ts} {json.dumps({"url": "https://example.com/", "offset": ts})}\n'
+             for ts in ('20240131235959', '20240201000000', '20240229235959', '20240301000000')]
+    path = tmp_path / 'index.cdx'
+    path.write_text(''.join(lines))
+    main(['index', str(path), '--domain', 'example.com', '--from', '202402', '--to', '202402', '--fields', 'offset',
+          '--output-format', 'csv'])
+    assert capsys.readouterr().out.split() == ['offset', '20240201000000', '20240229235959']

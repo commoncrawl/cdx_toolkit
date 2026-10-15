@@ -206,9 +206,6 @@ class CdxFilesBackend(IndexBackend):
             raise UsageError(
                 f'select captures from the {self.name} with --url, --hostname, --domain, --url-file, --from or --to'
             )
-        for timestamp in (query.from_ts, query.to):
-            if timestamp and not (timestamp.isdigit() and 4 <= len(timestamp) <= 14):
-                raise UsageError(f'invalid timestamp {timestamp!r}, use e.g. 2008, 20080328 or 200906302359')
         for pattern in query.urls:
             url_pattern_to_surts(pattern)
 
