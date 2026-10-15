@@ -260,8 +260,8 @@ or AWS Athena. This was not possible with the old commands:
 # DuckDB over s3://commoncrawl/cc-index/table/cc-main/warc/ (needs AWS credentials and cdx_toolkit[duckdb])
 cdxt index cc-url-index-s3 --domain commoncrawl.org --crawl CC-MAIN-2024-33 -o captures.jsonl
 
-# your own SQL query
-cdxt index cc-url-index-s3 --sql homepages.sql --yes -o homepages.csv
+# your own SQL query (examples/homepages.sql in the cdx_toolkit repository)
+cdxt index cc-url-index-s3 --sql examples/homepages.sql --yes -o homepages.csv
 
 # AWS Athena (needs cdx_toolkit[athena])
 cdxt index 'athena://athena.us-east-1.amazonaws.com/ccindex?S3OutputLocation=s3://my-bucket/athena/' \

@@ -36,7 +36,7 @@ examples:
   cdxt index ia --url 'commoncrawl.org/*' --from 2008 --to 200906302359 -o captures.jsonl
   cdxt index cc --url 'commoncrawl.org/*' --count
   cdxt index cc-url-index-s3 --domain commoncrawl.org --crawl CC-MAIN-2024-33 -o captures.jsonl
-  cdxt index cc-url-index-s3 --sql homepages.sql --yes -o captures.csv
+  cdxt index cc-url-index-s3 --sql examples/homepages.sql --yes -o captures.csv  # in the cdx_toolkit repo
   cdxt index 'indexes/cdx-*.gz' --url-file urls.txt -o filtered/  # one output per CDX file
   cdxt index cc --url 'commoncrawl.org/*' --limit 10 | cdxt repackage --prefix COMMONCRAWL
 '''

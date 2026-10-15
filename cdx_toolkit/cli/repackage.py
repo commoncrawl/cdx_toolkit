@@ -28,7 +28,7 @@ examples:
   cdxt index cc --url 'commoncrawl.org/*' --limit 10 -o captures.jsonl
   cdxt repackage captures.jsonl --prefix COMMONCRAWL --size 100MB
 
-  cdxt index cc-url-index-s3 --sql homepages.sql --yes -o homepages.csv
+  cdxt index cc-url-index-s3 --sql examples/homepages.sql --yes -o homepages.csv  # in the cdx_toolkit repo
   cdxt repackage homepages.csv --prefix s3://my-bucket/HOMEPAGES --warc-download-prefix s3://commoncrawl \\
       --processes 8 --parallel-readers 16
 

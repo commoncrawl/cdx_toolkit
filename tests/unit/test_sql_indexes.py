@@ -12,8 +12,9 @@ from cdx_toolkit.indexes.backends.athena import AthenaBackend, AthenaLocation
 from cdx_toolkit.indexes.backends.duckdb import DuckDbBackend
 from cdx_toolkit.indexes.backends.sql import normalize_row
 from cdx_toolkit.indexes.backends.sql_builder import check_language, query_conditions
+from cdx_toolkit.record_io import read_records
 
-from tests.conftest import requires_duckdb
+from tests.conftest import TEST_DATA_PATH, requires_duckdb
 
 
 ATHENA = 'athena://athena.us-east-1.amazonaws.com:443/ccindex?S3OutputLocation=s3://my-bucket/athena/'
@@ -379,3 +380,43 @@ def test_end_timestamp_includes_fractional_seconds(to, included):
 def test_end_timestamp_overflow():
     with pytest.raises(UsageError, match='invalid timestamp'):
         query_conditions(IndexQuery(to='9999'))
+
+
+@requires_duckdb
+def test_example_homepages_sql(tmp_path):
+    """examples/homepages.sql (the --sql example of the README), on a local copy of the index's columns."""
+    import duckdb
+
+    sql = (TEST_DATA_PATH.parent.parent / 'examples' / 'homepages.sql').read_text()
+    s3_files = 's3://commoncrawl/cc-index/table/cc-main/warc/crawl=CC-MAIN-2024-33/subset=warc/*.parquet'
+    assert s3_files in sql
+    rows = [
+        # url, url_host_tld, url_path, url_query, fetch_status
+        ('https://www.vatican.va/', 'va', '/', None, 200),  # a homepage
+        ('https://www.vatican.va/content/', 'va', '/content/', None, 200),
+        ('https://www.vatican.va/?lang=it', 'va', '/', 'lang=it', 200),
+        ('http://vatican.va/', 'va', '/', None, 301),
+        ('https://example.com/', 'com', '/', None, 200),
+    ]
+    values = ', '.join(
+        f"('{url}', '{tld}', '{path}', {repr(query) if query else 'NULL'}, {status}, 'text/html', "
+        f"TIMESTAMP '2024-08-01 12:00:00', 'crawl-data/a.warc.gz', {i}, 100)"
+        for i, (url, tld, path, query, status) in enumerate(rows)
+    )
+    index = tmp_path / 'part-0.parquet'
+    duckdb.connect().execute(f'''
+        COPY (SELECT * FROM (VALUES {values}) AS t(url, url_host_tld, url_path, url_query, fetch_status,
+              content_mime_type, fetch_time, warc_filename, warc_record_offset, warc_record_length))
+        TO '{index}' (FORMAT parquet)
+    ''')
+    query = tmp_path / 'homepages.sql'
+    query.write_text(sql.replace(s3_files, str(index)))
+    out = tmp_path / 'homepages.csv'
+
+    main(['index', str(index), '--sql', str(query), '--yes', '-o', str(out)])
+
+    captures = list(read_records(str(out), 'csv'))
+    assert [c['url'] for c in captures] == ['https://www.vatican.va/']
+    # the fields cdxt repackage needs
+    assert {k: captures[0][k] for k in ('filename', 'offset', 'length')} == {
+        'filename': 'crawl-data/a.warc.gz', 'offset': '0', 'length': '100'}

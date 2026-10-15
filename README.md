@@ -57,7 +57,7 @@ $ cdxt index cc --url 'commoncrawl.org/*' --count  # estimated number of capture
 $ cdxt index ia --url 'commoncrawl.org/*' --limit 10  # will show the beginning of IA's crawl
 
 $ cdxt index cc-url-index-s3 --domain commoncrawl.org --crawl CC-MAIN-2024-33 -o captures.csv  # DuckDB
-$ cdxt index cc-url-index-s3 --sql homepages.sql --yes -o captures.csv
+$ cdxt index cc-url-index-s3 --sql examples/homepages.sql --yes -o captures.csv
 
 $ cdxt index cc --url 'commoncrawl.org/*' --limit 10 -o captures.jsonl
 $ cdxt repackage captures.jsonl --prefix COMMONCRAWL
@@ -133,7 +133,9 @@ is one of the given [ISO 639-3](https://iso639-3.sil.org/) codes, e.g. `eng`,
 
 The columnar index can also be queried with your own SQL: `--sql query.sql`
 (or `--sql -` for stdin) runs the query as it is, instead of `--hostname`,
-`--domain`, `--crawl`, `--from`, `--to`, `--language` and `--limit`. Without `--sql`, the query selects the
+`--domain`, `--crawl`, `--from`, `--to`, `--language` and `--limit`; the query names the
+Parquet files it reads, see [examples/homepages.sql](examples/homepages.sql), and the
+[usage guides](docs/usage/) for more. Without `--sql`, the query selects the
 CDX fields (`url`, `timestamp`, `status`, `mime`, `digest`, `filename`,
 `offset`, `length`, `languages`, ... and `crawl`) for the given hosts and
 domains; `--dry-run` prints it without running it.
