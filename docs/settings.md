@@ -1,22 +1,5 @@
 # Settings
 
-## S3 settings
-
-For requests to S3 (e.g. `s3://commoncrawl`), `cdxt` uses Common Crawl's
-recommended AWS settings: region `us-east-1`, `retry_mode = adaptive`,
-`max_attempts = 100000`, and for S3 `addressing_style = virtual`,
-`payload_signing_enabled = false` and `max_concurrent_requests = 2`.
-Settings you configured yourself win: environment variables (`AWS_REGION`,
-`AWS_DEFAULT_REGION`, `AWS_RETRY_MODE`, `AWS_MAX_ATTEMPTS`), the AWS config file
-of your profile (`~/.aws/config`, `AWS_PROFILE`), and options in the fsspec
-configuration. `CDXT_AWS_DEFAULTS=0` turns the defaults off.
-
-The Athena client uses the same retry settings (its region is part of the
-`athena://` location). DuckDB has no adaptive retry mode and no limit for
-concurrent requests; for S3 it uses the region (`s3_region`), the addressing
-style (`s3_url_style`) and `max_attempts` (`http_retries`, with 1 second between
-retries).
-
 ## HTTP requests: rate limits and retries
 
 Requests over HTTP(S) go through `cdx_toolkit/myrequests.py`:
@@ -65,3 +48,20 @@ Redirects are not followed. Requests send the `User-Agent` `pypi_cdx_toolkit/<ve
 In `cdxt repackage`, a capture whose request fails is counted as failed (the other captures are still
 written, see the README). When the run is stopped, the waits end at once; a request in progress ends with
 its timeout.
+
+## S3 settings
+
+For requests to S3 (e.g. `s3://commoncrawl`), `cdxt` uses Common Crawl's
+recommended AWS settings: region `us-east-1`, `retry_mode = adaptive`,
+`max_attempts = 100000`, and for S3 `addressing_style = virtual`,
+`payload_signing_enabled = false` and `max_concurrent_requests = 2`.
+Settings you configured yourself win: environment variables (`AWS_REGION`,
+`AWS_DEFAULT_REGION`, `AWS_RETRY_MODE`, `AWS_MAX_ATTEMPTS`), the AWS config file
+of your profile (`~/.aws/config`, `AWS_PROFILE`), and options in the fsspec
+configuration. `CDXT_AWS_DEFAULTS=0` turns the defaults off.
+
+The Athena client uses the same retry settings (its region is part of the
+`athena://` location). DuckDB has no adaptive retry mode and no limit for
+concurrent requests; for S3 it uses the region (`s3_region`), the addressing
+style (`s3_url_style`) and `max_attempts` (`http_retries`, with 1 second between
+retries).
