@@ -238,3 +238,31 @@ def test_fsspec_retries_of_the_user_win(no_user_config, monkeypatch, retries, ex
     monkeypatch.setattr(fsspec.config, 'conf', {'s3': {'config_kwargs': {'retries': retries}}})
     aws.configure_fsspec_s3()
     assert fsspec.config.conf['s3']['config_kwargs']['retries'] == expected
+
+
+def fsspec_s3_conf():
+    import fsspec.config
+
+    return fsspec.config.conf.get('s3', {})
+
+
+@pytest.mark.parametrize('defaults', ['on', 'off'])
+def test_spawned_processes_use_the_defaults(no_user_config, monkeypatch, defaults):
+    """A spawned process does not inherit the configuration of this one: process_pool() configures it."""
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+
+    monkeypatch.setenv('CDXT_AWS_DEFAULTS', defaults)
+    monkeypatch.setenv('FSSPEC_CONFIG_DIR', '/nonexistent')  # not the fsspec configuration of the machine
+    ctx = multiprocessing.get_context('spawn')
+    with aws.process_pool(1, mp_context=ctx) as ex:
+        conf = ex.submit(fsspec_s3_conf).result()
+    if defaults == 'on':
+        assert conf['config_kwargs']['retries'] == FULL_DEFAULTS['retries']
+        assert conf['config_kwargs']['s3'] == FULL_DEFAULTS['s3']
+        assert conf['max_concurrency'] == 2
+    else:
+        assert 'config_kwargs' not in conf
+
+    with ProcessPoolExecutor(1, mp_context=ctx) as ex:  # without process_pool()
+        assert 'config_kwargs' not in ex.submit(fsspec_s3_conf).result()

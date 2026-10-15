@@ -35,10 +35,10 @@ import tempfile
 import time
 
 import fsspec
-from concurrent.futures import FIRST_EXCEPTION, ProcessPoolExecutor, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from typing import Callable, Dict, List, Optional, Tuple
 
-from cdx_toolkit.aws import configure_fsspec_s3
+from cdx_toolkit.aws import process_pool
 from cdx_toolkit.record_io import RecordWriter, read_records
 from cdx_toolkit.repackage.jobs import RecordsSource, RepackageResult, WaybackJob, WaybackSource
 from cdx_toolkit.repackage.repackager import Repackager
@@ -72,7 +72,6 @@ def _init_worker(file_sequence, cancel) -> None:
     global _FILE_SEQUENCE, _CANCEL
     _FILE_SEQUENCE = file_sequence
     _CANCEL = cancel
-    configure_fsspec_s3()  # a new process does not have the fsspec configuration of the main process
 
 
 def _next_file_sequence(_current: int) -> int:
@@ -119,9 +118,7 @@ def run_worker_processes(worker: Callable, configs: List, file_sequence, mp_cont
     worker cannot abort an S3 multipart upload; an S3 lifecycle rule removes incomplete uploads."""
     cancel_timeout = CANCEL_TIMEOUT if cancel_timeout is None else cancel_timeout
     cancel = mp_context.Event()
-    ex = ProcessPoolExecutor(
-        max_workers=len(configs), mp_context=mp_context, initializer=_init_worker, initargs=(file_sequence, cancel)
-    )
+    ex = process_pool(len(configs), mp_context=mp_context, initializer=_init_worker, initargs=(file_sequence, cancel))
     futures = []
     try:
         futures = [ex.submit(worker, config) for config in configs]

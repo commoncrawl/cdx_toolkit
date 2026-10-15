@@ -7,11 +7,11 @@ and --url-file.
 '''
 import logging
 import os
-from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from itertools import islice
 from typing import Iterator, List, Mapping, NamedTuple, Optional, Tuple
 
+from cdx_toolkit.aws import process_pool
 from cdx_toolkit.record_io import (
     check_glob, format_from_path, is_empty_dir, is_glob, open_text, parse_cdxj_line, read_records,
 )
@@ -263,7 +263,7 @@ class CdxFilesBackend(IndexBackend):
         tasks = [(f.path, join(f.relative_path), capture_filter) for f in self.files()]
 
         if processes > 1:
-            with ProcessPoolExecutor(max_workers=processes) as ex:
+            with process_pool(processes) as ex:
                 results = list(ex.map(_filter_file, tasks))
         else:
             results = [_filter_file(task) for task in tasks]

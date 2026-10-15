@@ -121,7 +121,7 @@ def test_repackage_over_http_with_parallel_readers(tmpdir):
 def test_repackage_over_http_with_processes(tmpdir, monkeypatch, mock_data_commoncrawl):
     if mock_data_commoncrawl is not None:
         # the HTTP mock only applies in this process
-        monkeypatch.setattr('cdx_toolkit.repackage.multiprocess.ProcessPoolExecutor', InlineExecutor)
+        monkeypatch.setattr('cdx_toolkit.repackage.multiprocess.process_pool', InlineExecutor)
     assert_repackage(tmpdir, 'https://data.commoncrawl.org', base_prefix=tmpdir, extra_args=['--processes=2'])
 
 

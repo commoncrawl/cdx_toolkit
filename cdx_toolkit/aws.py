@@ -149,6 +149,24 @@ def configure_fsspec_s3() -> None:
     conf.setdefault('max_concurrency', max_concurrent_requests())
 
 
+def process_pool(max_workers: int, mp_context=None, initializer=None, initargs=()):
+    """A ProcessPoolExecutor whose processes use the S3 defaults of configure_fsspec_s3() like this one: a process
+    started with spawn (macOS, Windows) does not inherit the changes of fsspec.config.conf. Settings from
+    files and environment variables apply in every process; other in-memory changes of the configuration
+    are not passed on."""
+    from concurrent.futures import ProcessPoolExecutor
+
+    return ProcessPoolExecutor(
+        max_workers=max_workers, mp_context=mp_context, initializer=_init_process, initargs=(initializer, initargs)
+    )
+
+
+def _init_process(initializer, initargs) -> None:
+    configure_fsspec_s3()
+    if initializer is not None:
+        initializer(*initargs)
+
+
 def _user_value(setting: str) -> Optional[str]:
     for name in SETTING_ENV_VARS.get(setting, ()):
         if os.environ.get(name):

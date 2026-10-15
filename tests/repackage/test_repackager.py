@@ -363,7 +363,7 @@ def test_full_s3_and_hf_filenames_get_their_readers(tmp_path, processes):
     with patch('aioboto3.Session') as session, \
             patch('cdx_toolkit.repackage.readers.hf.make_hf_reader', fake_make_hf_reader), \
             patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get), \
-            patch.object(multiprocess, 'ProcessPoolExecutor', InlineExecutor):
+            patch.object(multiprocess, 'process_pool', InlineExecutor):
         session.return_value.client.return_value = FakeS3Client()
         if processes == 1:
             result = Repackager(source=source, prefix_path=str(tmp_path / 'out'), writer_info={}).run()
@@ -476,7 +476,7 @@ def test_no_s3_client_without_s3(tmp_path):
 @pytest.mark.parametrize('remote', [False, True])
 def test_multiprocess_repackage(tmp_path, remote):
     prefix = 'memory://mp-test/out/RUN' if remote else str(tmp_path / 'RUN')
-    with patch.object(multiprocess, 'ProcessPoolExecutor', InlineExecutor), \
+    with patch.object(multiprocess, 'process_pool', InlineExecutor), \
             patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get):
         n = multiprocess.run_multiprocess_repackage(
             source=RecordsSource(CAPTURES, 'https://data.example.org'), n_processes=3, readers_per_process=2,
@@ -507,7 +507,7 @@ def test_multiprocess_repackage(tmp_path, remote):
 def test_multiprocess_repackage_keeps_the_order_of_the_source(tmp_path):
     """Workers do not sort their shard again (--no-sort streams, a sorted source is sorted already)."""
     captures = CAPTURES[::-1]
-    with patch.object(multiprocess, 'ProcessPoolExecutor', InlineExecutor), \
+    with patch.object(multiprocess, 'process_pool', InlineExecutor), \
             patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get):
         multiprocess.run_multiprocess_repackage(
             source=RecordsSource(captures, 'https://data.example.org', sort=False), n_processes=1,
@@ -528,7 +528,7 @@ def test_multiprocess_repackage_of_wayback_replays(tmp_path):
 
     captures = [{'url': f'https://example.com/{i}', 'timestamp': '20240101000000', 'status': '200'} for i in range(3)]
     fs = fsspec.filesystem('memory')
-    with patch.object(multiprocess, 'ProcessPoolExecutor', InlineExecutor), \
+    with patch.object(multiprocess, 'process_pool', InlineExecutor), \
             patch('cdx_toolkit.repackage.readers.wayback.fetch_wb_warc', side_effect=fake_fetch_wb_warc):
         result = multiprocess.run_multiprocess_repackage(
             source=WaybackSource(captures, 'ia'), n_processes=1, readers_per_process=1,
