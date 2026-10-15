@@ -36,7 +36,7 @@ ATHENA = 'athena://athena.us-east-1.amazonaws.com:443/ccindex?S3OutputLocation=s
         ('https://example.com/cdx.php', 'cdx-api', CdxApiBackend, None),
     ],
 )
-def test_resolve_index(location, backend_name, backend, backend_location):
+def test_open_index_backend(location, backend_name, backend, backend_location):
     resolved = open_index(location, backend_name)
     assert isinstance(resolved, backend)
     if backend_location:
@@ -54,7 +54,7 @@ def test_resolve_index(location, backend_name, backend, backend_location):
         (ATHENA, 'cdx-files', 'is not a path of CDX files'),
     ],
 )
-def test_resolve_index_errors(location, backend_name, error):
+def test_open_index_backend_errors(location, backend_name, error):
     with pytest.raises(UsageError, match=error):
         open_index(location, backend_name)
 
