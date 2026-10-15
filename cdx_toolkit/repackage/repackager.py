@@ -12,6 +12,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from cdx_toolkit.aws import botocore_config
 from cdx_toolkit.repackage.jobs import RangePayload, RepackageResult
 from cdx_toolkit.repackage.readers import Readers
+from cdx_toolkit.repackage.readers.http import run_in_daemon_thread
 from cdx_toolkit.repackage.urls import is_s3_url
 from cdx_toolkit.repackage.writers.series import WarcFileSeries
 
@@ -196,16 +197,23 @@ class Repackager:
             )
 
     async def _produce_range_jobs(self, range_jobs_queue: asyncio.Queue, stop: threading.Event) -> int:
-        """Drive the (sync) source in a worker thread, feeding the async queue.
+        """Drive the (sync) source in a daemon thread, feeding the async queue.
 
         The thread waits for queue space in short steps, so it stops soon after `stop` is set (cancellation,
-        or a failed writer), also when the queue is full and nobody reads from it anymore."""
+        or a failed writer), also when the queue is full and nobody reads from it anymore. A source that blocks
+        (e.g. stdin from a process that is still running) cannot be interrupted: nothing waits for its thread,
+        not this task when it is cancelled, not asyncio.run() and not the interpreter at exit."""
         loop = asyncio.get_running_loop()
 
         def drain() -> int:
             count = 0
             for job in self.source.iter_range_jobs():
-                future = asyncio.run_coroutine_threadsafe(range_jobs_queue.put(job), loop)
+                if stop.is_set():
+                    return count
+                try:
+                    future = asyncio.run_coroutine_threadsafe(range_jobs_queue.put(job), loop)
+                except RuntimeError:  # the event loop is closed
+                    return count
                 while True:
                     if stop.is_set():
                         future.cancel()
@@ -219,7 +227,7 @@ class Repackager:
             return count
 
         try:
-            count = await asyncio.to_thread(drain)
+            count = await run_in_daemon_thread(drain)
         finally:
             stop.set()  # the thread keeps running if this task is cancelled; let it stop
 

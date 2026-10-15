@@ -7,6 +7,7 @@ import gzip
 import itertools
 import logging
 import os
+import sys
 import threading
 import time
 from unittest.mock import Mock, patch
@@ -560,3 +561,121 @@ def test_log_progress(caplog):
 
     assert caplog.text.count('WARC Reader 1: ') == 2
     assert 'WARC Reader 1: 4 items, 4.0 MB in ' in caplog.text
+
+
+def test_writer_error_with_a_blocked_source(tmp_path):
+    """The writer fails while the source waits for its next capture (e.g. a generator waiting for input): run()
+    raises the writer's error at once, without waiting for the source."""
+    release = threading.Event()
+
+    def captures():
+        yield CAPTURES[0]
+        release.wait()  # blocks until the end of the test
+        yield CAPTURES[1]
+
+    async def failing_write(self, data):
+        raise OSError('disk full')
+
+    outcome = []
+
+    def main():
+        repackager = Repackager(
+            source=RecordsSource(captures(), 'https://data.example.org', sort=False),
+            prefix_path=str(tmp_path / 'out'), writer_info={},
+        )
+        try:
+            repackager.run()
+        except OSError as e:
+            outcome.append(e)
+
+    with patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get), \
+            patch.object(LocalOutputFile, 'write', failing_write):
+        thread = threading.Thread(target=main, daemon=True)
+        thread.start()
+        thread.join(timeout=5)
+    release.set()
+    assert not thread.is_alive(), 'run() waits for the blocked source'
+    assert [str(e) for e in outcome] == ['disk full']
+    assert glob.glob(str(tmp_path / 'out-*')) == []
+
+
+CHILD = '''
+import sys
+from unittest.mock import patch
+from cdx_toolkit.cli import main
+from cdx_toolkit.repackage.writers.local import LocalOutputFile
+from tests.repackage.test_repackager import fake_get
+
+async def failing_write(self, data):
+    raise OSError('disk full')
+
+with patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get), \\
+        patch.object(LocalOutputFile, 'write', failing_write):
+    main(['repackage', '-', '--no-sort', '--warc-download-prefix', 'https://data.example.org',
+          '--prefix', sys.argv[1]])
+'''
+
+
+def test_writer_error_with_stdin_still_open(tmp_path):
+    """cdxt repackage reading stdin from a process that keeps running: the writer's error ends cdxt at once."""
+    import json
+    import subprocess
+    import sys
+
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    proc = subprocess.Popen(
+        [sys.executable, '-c', CHILD, str(tmp_path / 'out')], cwd=root, stdin=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        proc.stdin.write(json.dumps(CAPTURES[0]) + '\n')
+        proc.stdin.flush()  # and stdin stays open
+        proc.wait(timeout=30)
+        stderr = proc.stderr.read()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.stdin.close()
+    assert proc.returncode != 0
+    assert 'disk full' in stderr
+    assert glob.glob(str(tmp_path / 'out-*')) == []
+
+
+CHILD_WITHOUT_FAILURE = '''
+import sys
+from unittest.mock import patch
+from cdx_toolkit.cli import main
+from tests.repackage.test_repackager import fake_get
+
+with patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get):
+    main(['repackage', '-', '--no-sort', '--warc-download-prefix', 'https://data.example.org',
+          '--prefix', sys.argv[1]])
+'''
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='SIGINT')
+def test_ctrl_c_with_stdin_still_open(tmp_path):
+    """Ctrl-C while cdxt repackage waits for more input on stdin: it ends at once, and removes the current file."""
+    import json
+    import signal
+    import subprocess
+
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    proc = subprocess.Popen(
+        [sys.executable, '-c', CHILD_WITHOUT_FAILURE, str(tmp_path / 'out')], cwd=root, stdin=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        proc.stdin.write(json.dumps(CAPTURES[0]) + '\n')
+        proc.stdin.flush()  # and stdin stays open
+        deadline = time.monotonic() + 30
+        while not glob.glob(str(tmp_path / 'out-*')) and time.monotonic() < deadline:
+            time.sleep(0.05)  # the first record is being written
+        proc.send_signal(signal.SIGINT)
+        proc.wait(timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.stdin.close()
+    assert proc.returncode != 0
+    assert glob.glob(str(tmp_path / 'out-*')) == []
