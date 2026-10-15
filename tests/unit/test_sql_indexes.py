@@ -20,7 +20,7 @@ ATHENA = 'athena://athena.us-east-1.amazonaws.com:443/ccindex?S3OutputLocation=s
 
 
 @pytest.mark.parametrize(
-    'location, index_format, backend, backend_location',
+    'location, backend_name, backend, backend_location',
     [
         ('cc', 'auto', CdxApiBackend, None),
         ('cc-url-index-s3', 'auto', DuckDbBackend, 's3://commoncrawl/cc-index/table/cc-main/warc/'),
@@ -30,27 +30,33 @@ ATHENA = 'athena://athena.us-east-1.amazonaws.com:443/ccindex?S3OutputLocation=s
         ('s3://bucket/index/', 'duckdb', DuckDbBackend, 's3://bucket/index/'),
         (ATHENA, 'auto', AthenaBackend, ATHENA),
         ('s3://bucket/indexes/cdx-00000.gz', 'auto', CdxFilesBackend, 's3://bucket/indexes/cdx-00000.gz'),
-        ('./indexes/*.cdx', 'cdx', CdxFilesBackend, './indexes/*.cdx'),
+        ('./indexes/*.cdx', 'cdx-files', CdxFilesBackend, './indexes/*.cdx'),
+        ('https://example.com/cdx-00000', 'auto', CdxApiBackend, None),
+        ('https://example.com/cdx-00000', 'cdx-files', CdxFilesBackend, 'https://example.com/cdx-00000'),
+        ('https://example.com/cdx.php', 'cdx-api', CdxApiBackend, None),
     ],
 )
-def test_resolve_index(location, index_format, backend, backend_location):
-    resolved = open_index(location, index_format)
+def test_resolve_index(location, backend_name, backend, backend_location):
+    resolved = open_index(location, backend_name)
     assert isinstance(resolved, backend)
     if backend_location:
         assert resolved.location == backend_location
 
 
 @pytest.mark.parametrize(
-    'location, index_format, error',
+    'location, backend_name, error',
     [
         ('cc', 'duckdb', 'cannot be queried with DuckDB'),
         ('s3://bucket/index/', 'athena', 'invalid Athena location'),
         ('athena://athena.us-east-1.amazonaws.com/ccindex', 'auto', 'S3OutputLocation'),
+        ('./indexes/*.cdx', 'cdx-api', 'is not a CDX API'),
+        ('cc', 'cdx-files', 'is not a path of CDX files'),
+        (ATHENA, 'cdx-files', 'is not a path of CDX files'),
     ],
 )
-def test_resolve_index_errors(location, index_format, error):
+def test_resolve_index_errors(location, backend_name, error):
     with pytest.raises(UsageError, match=error):
-        open_index(location, index_format)
+        open_index(location, backend_name)
 
 
 def test_athena_location():
@@ -212,7 +218,7 @@ def test_index_duckdb_end_to_end(parquet_index, tmp_path, capsys):
     output = tmp_path / 'out.jsonl'
     with patch('cdx_toolkit.indexes.backends.sql.resolve_crawl_names', return_value=['CC-MAIN-2024-33']):
         main([
-            'index', str(parquet_index), '--index-format', 'duckdb', '--domain', 'example.com',
+            'index', str(parquet_index), '--index-backend', 'duckdb', '--domain', 'example.com',
             '--crawl', 'CC-MAIN-2024-33', '-o', str(output),
         ])
 

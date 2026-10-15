@@ -126,7 +126,7 @@ def test_repackage_over_http_with_processes(tmpdir, monkeypatch, mock_data_commo
 
 
 @pytest.mark.parametrize('fmt', ['csv', 'tsv', 'jsonl'])
-def test_repackage_index_formats(tmpdir, fmt):
+def test_repackage_input_formats(tmpdir, fmt):
     """Captures written by `cdxt index` in any format (here: with the columnar index column names for csv)."""
     captures = list(read_records(write_captures(tmpdir)))
     fields = ['url', 'filename', 'offset', 'length']
@@ -140,9 +140,11 @@ def test_repackage_index_formats(tmpdir, fmt):
     write_records(captures, path, fmt, fields)
 
     main(args=['repackage', path, f'--prefix={tmpdir}/TEST'])
+    main(args=['repackage', path, f'--input-format={fmt}', f'--prefix={tmpdir}/TEST2'])
 
-    responses = read_warc(os.path.join(str(tmpdir), 'TEST-001.warc.gz'))['response']
-    assert len(responses) == 10
+    for prefix in ('TEST', 'TEST2'):
+        responses = read_warc(os.path.join(str(tmpdir), f'{prefix}-001.warc.gz'))['response']
+        assert len(responses) == 10
 
 
 def test_repackage_subprefix_and_metadata(tmpdir):

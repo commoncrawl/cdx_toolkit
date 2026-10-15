@@ -8,7 +8,8 @@
 	+ `--cc-sort` is now passed on to the CDX fetcher
 	+ the log level variable is `CDXT_LOGLEVEL` (`LOGLEVEL` still works), like cdx_toolkit's other environment variables
 	+ `cdxt index` queries Common Crawl's columnar URL index with DuckDB (`cc-url-index-s3`, `cc-url-index-hf`, `*.parquet`)
-	  or AWS Athena (`athena://...`): `--hostname`/`--domain`/`--crawl`/`--limit` or your own `--sql`, cost confirmation (`--yes`), `--dry-run`
+	  or AWS Athena (`athena://...`): `--hostname`/`--domain`/`--crawl`/`--limit` or your own `--sql`, cost confirmation (`--yes`), `--dry-run`;
+	  `--index-backend cdx-api|cdx-files|duckdb|athena` overrides the backend detected from INDEX
 	+ `cdxt repackage` copies WARC records byte-for-byte with the async WARC fetcher (from the feat/warc-range-sources branch):
 	  reads from https://, s3:// and hf:// (Hugging Face Storage Buckets), writes to local, s3:// or hf://,
 	  `--processes`, `--parallel-readers`, `--add-metadata-record`, glob input; output files are now named `<prefix>-001.warc.gz`
@@ -21,7 +22,7 @@
 	  prefixes (`--url-file-type domain` for host lists), one output per CDX file for an `-o` path without extension,
 	  `--processes`
 	+ SQL indexes: `--url` patterns (matched against `url_surtkey`), `--from`/`--to` (fetch time), `--language` (primary content language, three-letter ISO 639-3 codes)
-	+ `--output-format cdx` / `--index-format cdx` as another name for `cdxj`; clear error for globs over http(s)
+	+ `--output-format cdx` / `--input-format cdx` as another name for `cdxj`; clear error for globs over http(s)
 	+ Parquet output for `cdxt index` and Parquet input for `cdxt repackage` (`cdx_toolkit[parquet]`)
 	+ `cdxt repackage`: default `--prefix REPACKAGE` (was `TEST`), no WARC file is written without captures,
 	  a full URL in `warc_filename`/`filename` is used as it is (the `warc_url` column is gone); stops (exit status 2)

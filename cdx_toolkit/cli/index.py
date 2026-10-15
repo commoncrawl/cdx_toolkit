@@ -2,7 +2,7 @@ from argparse import Namespace, RawDescriptionHelpFormatter
 import logging
 
 from cdx_toolkit.indexes import IndexQuery, UsageError, open_index
-from cdx_toolkit.indexes.resolve import INDEX_FORMATS
+from cdx_toolkit.indexes.resolve import INDEX_BACKENDS
 from cdx_toolkit.record_io import (
     FORMAT_CHOICES, canonical_format, format_from_path, import_pyarrow, open_text, write_records,
 )
@@ -21,7 +21,7 @@ INDEX is one of:
   cc-url-index-s3            Common Crawl's columnar URL index on S3, queried with DuckDB
   cc-url-index-hf            Common Crawl's columnar URL index on Hugging Face, queried with DuckDB
   PATH                       other columnar (parquet) index: *.parquet files, or a hive-partitioned
-                             directory with --index-format duckdb
+                             directory with --index-backend duckdb
   athena://...               the columnar URL index queried with AWS Athena, e.g.
                              athena://athena.us-east-1.amazonaws.com/ccindex?S3OutputLocation=s3://bucket/path/
   PATH                       CDX file(s), local or remote, may be a glob, e.g.
@@ -52,10 +52,10 @@ def add_parser(subparsers):
     add_verbose_arg(parser, subcommand=True)
     parser.add_argument('index', metavar='INDEX', help='index name or location (see above)')
     parser.add_argument(
-        '--index-format',
-        choices=INDEX_FORMATS,
+        '--index-backend',
+        choices=INDEX_BACKENDS,
         default='auto',
-        help='type of the index (default: detected from INDEX)',
+        help='how INDEX is queried (default: detected from INDEX, see above)',
     )
 
     selection = parser.add_argument_group(
@@ -221,7 +221,7 @@ def writes_per_file(args: Namespace, backend) -> bool:
 
 def run(args: Namespace, cmdline: str):
     backend = open_index(
-        args.index, args.index_format, cc_mirror=args.cc_mirror, cc_sort=args.cc_sort, assume_yes=args.yes
+        args.index, args.index_backend, cc_mirror=args.cc_mirror, cc_sort=args.cc_sort, assume_yes=args.yes
     )
     query = build_query(args)
 

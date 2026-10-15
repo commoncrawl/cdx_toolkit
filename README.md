@@ -77,8 +77,9 @@ $ cdxt index ia --url 'commoncrawl.org/*' --limit 10 | cdxt repackage --wb ia --
 
 ### cdxt index
 
-`cdxt index INDEX` takes one of these indexes (the type is detected from INDEX, or set with
-`--index-format cdx|duckdb|athena`):
+`cdxt index INDEX` takes one of these indexes. How it is queried is detected from INDEX, or set with
+`--index-backend cdx-api|cdx-files|duckdb|athena` (e.g. `cdx-files` for a CDX file at an `https://`
+URL without file extension):
 
 | INDEX | Index |
 |---|---|
@@ -86,7 +87,7 @@ $ cdxt index ia --url 'commoncrawl.org/*' --limit 10 | cdxt repackage --wb ia --
 | `https://...` (no file extension) | another CDX API server, e.g. `https://web.archive.org/cdx/search/cdx` |
 | `cc-url-index-s3` | Common Crawl's [columnar URL index](https://commoncrawl.org/blog/index-to-warc-files-and-urls-in-columnar-format) on S3 (`s3://commoncrawl/cc-index/table/cc-main/warc/`), queried with DuckDB; needs AWS credentials and `cdx_toolkit[duckdb]` |
 | `cc-url-index-hf` | the same index on Hugging Face (`hf://buckets/commoncrawl/commoncrawl/cc-index/table/cc-main/warc/`, recent crawls only), queried with DuckDB; needs `cdx_toolkit[duckdb,hf]`. Much slower than S3 |
-| `*.parquet`, or a hive-partitioned directory with `--index-format duckdb` | another columnar index, local or remote, queried with DuckDB |
+| `*.parquet`, or a hive-partitioned directory with `--index-backend duckdb` | another columnar index, local or remote, queried with DuckDB |
 | `athena://athena.us-east-1.amazonaws.com/ccindex?S3OutputLocation=s3://bucket/path/` | the columnar URL index queried with AWS Athena (database `ccindex`, table `ccindex`; add `&table=...` for another table); needs `cdx_toolkit[athena]` |
 | other paths, e.g. `'s3://commoncrawl/cc-index/collections/CC-MAIN-2024-30/indexes/cdx-*.gz'` | CDX files (one capture per line, optionally gzipped), local or remote, a single file or a glob |
 
@@ -250,6 +251,7 @@ local or remote file, a glob like `s3://bucket/indexes/*.cdx.gz`, or stdin
 if no path or `-` is given) and writes them into new WARC files. The input
 format (JSONL, CDXJ, CSV or TSV) is detected from the first line, so Common
 Crawl's CDX files can be used directly; `*.parquet` files are read as Parquet.
+Use `--input-format` to set the format instead.
 The columnar index column names (`warc_filename`, `warc_record_offset`,
 `warc_record_length`) work too. A `filename` (or `warc_filename`) that is a
 full URL (`s3://...`, `https://...`, `hf://...`) is used as it is, otherwise

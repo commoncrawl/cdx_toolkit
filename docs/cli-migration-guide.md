@@ -278,7 +278,7 @@ The `repackage` command of the unreleased `feat/warc-range-sources` branch (#73)
 | Branch | New |
 |---|---|
 | `cdxt --crawl C repackage --target-source sql --engine athena --athena-database D --athena-s3-output S3 --hostnames H ...` | `cdxt index 'athena://athena.us-east-1.amazonaws.com/D?S3OutputLocation=S3' --crawl C --hostname H -o captures.csv` + `cdxt repackage captures.csv ...` |
-| `... --engine duckdb --duckdb-index-path PATH` | `cdxt index PATH --index-format duckdb ...` (or `cc-url-index-s3`, `cc-url-index-hf`) |
+| `... --engine duckdb --duckdb-index-path PATH` | `cdxt index PATH --index-backend duckdb ...` (or `cc-url-index-s3`, `cc-url-index-hf`) |
 | `--hostnames H1 H2`, `--domains D1 D2` | `--hostname H1 --hostname H2`, `--domain D1 --domain D2` |
 | `--query SQL`, `--query-file FILE` | `cdxt index ... --sql FILE` (`--sql -` reads stdin) |
 | — | new for SQL indexes: `--from`/`--to` (`fetch_time`), `--language` (primary content language, ISO 639-3), Parquet output (`-o captures.parquet`, `cdx_toolkit[parquet]`) |

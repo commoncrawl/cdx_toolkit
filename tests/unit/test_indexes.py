@@ -36,8 +36,8 @@ def test_open_index():
 
     cdx_files = open_index('s3://commoncrawl/cc-index/collections/CC-MAIN-2024-30/indexes/cdx-*.gz')
     assert isinstance(cdx_files, CdxFilesBackend)
-    with pytest.raises(UsageError, match='unknown index format'):
-        open_index('cc', index_format='parquet')
+    with pytest.raises(UsageError, match='unknown index backend'):
+        open_index('cc', backend='parquet')
 
 
 def test_query_options_used():

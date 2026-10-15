@@ -65,7 +65,7 @@ def _index_and_repackage(tmpdir, index_args, host=HOST):
 @pytest.mark.usefixtures('mocked')
 def test_index_duckdb_local_e2e(tmpdir, local_url_index):
     captures = _index_and_repackage(
-        tmpdir, [str(local_url_index), '--index-format', 'duckdb', '--crawl', LOCAL_INDEX_CRAWL,
+        tmpdir, [str(local_url_index), '--index-backend', 'duckdb', '--crawl', LOCAL_INDEX_CRAWL,
                  '--hostname', LOCAL_INDEX_HOST], host=LOCAL_INDEX_HOST,
     )
     # all captures of the host in the crawl, not those of the other crawl
@@ -77,7 +77,7 @@ def test_index_duckdb_local_e2e(tmpdir, local_url_index):
 @pytest.mark.usefixtures('mocked')
 def test_index_duckdb_local_domain_e2e(tmpdir, local_url_index):
     captures = _index_and_repackage(
-        tmpdir, [str(local_url_index), '--index-format', 'duckdb', '--crawl', LOCAL_INDEX_CRAWL,
+        tmpdir, [str(local_url_index), '--index-backend', 'duckdb', '--crawl', LOCAL_INDEX_CRAWL,
                  '--domain', 'missiondefrance.fr', '--limit', '5'], host=LOCAL_INDEX_HOST,
     )
     assert len(captures) == 5
@@ -94,7 +94,7 @@ def test_index_duckdb_local_sql_e2e(tmpdir, local_url_index):
             WHERE url_host_name = '{LOCAL_INDEX_HOST}'
             LIMIT 3
         """)
-    captures = _index_and_repackage(tmpdir, [str(local_url_index), '--index-format', 'duckdb', '--sql', sql,
+    captures = _index_and_repackage(tmpdir, [str(local_url_index), '--index-backend', 'duckdb', '--sql', sql,
                                              '--yes'], host=LOCAL_INDEX_HOST)
     assert len(captures) == 3
     assert {c['languages'] for c in captures} == {'fra'}

@@ -37,7 +37,7 @@ def repackage(
     operator: Optional[str] = None,
     is_part_of: Optional[str] = None,
     description: Optional[str] = None,
-    index_format: Optional[str] = None,
+    input_format: Optional[str] = None,
 ) -> RepackageResult:
     """Write the captures to the WARC files <prefix>[-<subprefix>]-001.warc.gz, -002, ... (local, s3:// or hf://).
 
@@ -55,7 +55,7 @@ def repackage(
         sort: sort the captures by WARC file and offset (better read locality, keeps the captures in memory).
         log_every_n: log the progress every N records (0 = off).
         creator, operator, is_part_of, description: fields of the warcinfo record.
-        index_format: format of the index file, if `captures` is a path (default: detected).
+        input_format: format of the index file, if `captures` is a path (default: detected).
 
     Returns the number of captures requested, written, and failed (could not be fetched; the others are
     written). Raises UsageError for invalid options, and if the output cannot be written."""
@@ -63,27 +63,27 @@ def repackage(
         # the minimum interval between requests to the wayback machine only holds within a process
         raise UsageError('--processes cannot be used with --wb')
     if isinstance(captures, str):
-        captures = read_index_file(captures, index_format)
+        captures = read_index_file(captures, input_format)
     check_output_is_new(prefix, subprefix)
     info = warcinfo(prefix, subprefix, creator, operator, is_part_of, description)
     return _run(captures, prefix, subprefix, size, warc_download_prefix, wb, processes, parallel_readers,
                 list(metadata_records), sort, log_every_n, info)
 
 
-def read_index_file(path: str, index_format: Optional[str] = None) -> Iterable[dict]:
+def read_index_file(path: str, input_format: Optional[str] = None) -> Iterable[dict]:
     from cdx_toolkit.record_io import canonical_format, check_glob, format_from_path, import_pyarrow, read_records
 
-    index_format = None if index_format in (None, 'auto') else canonical_format(index_format)
+    input_format = None if input_format in (None, 'auto') else canonical_format(input_format)
     try:
         check_glob(path)
     except ValueError as e:
         raise UsageError(str(e)) from None
-    if index_format == 'parquet' or (index_format is None and format_from_path(path) == 'parquet'):
+    if input_format == 'parquet' or (input_format is None and format_from_path(path) == 'parquet'):
         try:
             import_pyarrow()
         except RuntimeError as e:
             raise UsageError(str(e)) from None
-    return read_records(path, index_format)
+    return read_records(path, input_format)
 
 
 def check_output_is_new(prefix: str, subprefix: Optional[str]) -> None:

@@ -50,8 +50,8 @@ def add_parser(subparsers):
         help="index file(s) with captures, local or remote, may be a glob (default: '-' = stdin)",
     )
     parser.add_argument(
-        '--index-format', choices=('auto',) + FORMAT_CHOICES, default='auto',
-        help=('format of the index file (default: parquet for *.parquet, otherwise detected from the first line); '
+        '--input-format', choices=('auto',) + FORMAT_CHOICES, default='auto',
+        help=('format of the input file (default: parquet for *.parquet, otherwise detected from the first line); '
               "cdx is the same as cdxj: Common Crawl's index files have the .cdx extension but use the CDXJ format "
               '(crawl index JSON)'),
     )
@@ -127,7 +127,7 @@ def run(args: Namespace, cmdline: str):
         operator=args.operator,
         is_part_of=args.is_part_of,
         description=args.description or 'warc extraction generated with: ' + cmdline,
-        index_format=args.index_format,
+        input_format=args.input_format,
     )
 
     LOGGER.info('wrote %d of %d captures to WARC files (%d failed) in %.1f seconds',
