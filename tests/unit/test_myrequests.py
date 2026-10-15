@@ -13,7 +13,10 @@ def test_get_without_error():
     assert resp.status_code == 200
 
 
-def test_get_with_connection_error(caplog):
+def test_get_with_connection_error(caplog, monkeypatch):
+    from cdx_toolkit import myrequests
+
+    monkeypatch.setitem(myrequests.RATE_LIMITER.intervals, 'example.com', 0)  # every attempt takes its turn
     with patch('requests.get') as mock_get:
         mock_get.side_effect = requests.exceptions.ConnectionError('Connection failed')
 
@@ -51,7 +54,7 @@ def test_finish_spaces_the_next_request_from_the_end_of_the_previous_one():
     from cdx_toolkit.myrequests import HostRateLimiter
 
     limiter = HostRateLimiter(10.0, {})
-    with patch('cdx_toolkit.myrequests.time.time', return_value=2000.0):
+    with patch('cdx_toolkit.myrequests.time.monotonic', return_value=2000.0):
         limiter.finish('example.org')
     assert limiter.reserve('example.org', 2001.0) == 2010.0
 
@@ -68,3 +71,38 @@ def test_dns_error_is_only_fatal_for_unknown_hosts(monkeypatch, host, fatal):
         assert 'invalid hostname' in str(e.value) and get.call_count == 1
     else:
         assert '2 failures' in str(e.value) and get.call_count == 2  # retried
+
+
+def test_retries_take_their_turn(monkeypatch):
+    """Three parallel requests to a host, the first answered with a 503: its retry keeps the minimum interval
+    to the other requests too (it used to start together with the third one)."""
+    import threading
+    import time
+    from unittest.mock import Mock
+
+    from cdx_toolkit import myrequests
+
+    host = 'retry-turn.example.org'
+    interval = 0.1
+    monkeypatch.setitem(myrequests.RATE_LIMITER.intervals, host, interval)
+    starts = []
+    lock = threading.Lock()
+
+    def get(url, **kwargs):
+        with lock:
+            starts.append(time.monotonic())
+            first = len(starts) == 1
+        return Mock(status_code=503 if first else 200, text='')
+
+    with patch('requests.get', side_effect=get):
+        threads = [threading.Thread(target=myrequests_get, args=(f'https://{host}/{i}',)) for i in range(3)]
+        for thread in threads:
+            thread.start()
+            time.sleep(0.01)  # the first thread takes the first turn
+        for thread in threads:
+            thread.join()
+
+    assert len(starts) == 4
+    starts.sort()
+    gaps = [b - a for a, b in zip(starts, starts[1:])]
+    assert min(gaps) > interval * 0.8, gaps

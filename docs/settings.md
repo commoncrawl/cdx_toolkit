@@ -16,8 +16,8 @@ Reads from `s3://` (see above), `hf://`, and the queries of DuckDB and Athena do
 ### Minimum interval between requests
 
 Requests to the same host start at least a minimum interval apart, also when they are made from several
-threads (e.g. `cdxt repackage --parallel-readers`). After a request, including its retries, the next one
-waits the interval again.
+threads (e.g. `cdxt repackage --parallel-readers`). Every attempt counts, also a retry: it waits for its
+backoff, then for its turn. After a request, including its retries, the next one waits the interval again.
 
 | Host | Interval | Environment variable |
 |---|---|---|

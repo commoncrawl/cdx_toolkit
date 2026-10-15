@@ -32,7 +32,8 @@ def dns_fatal(hostname) -> bool:
 
 class HostRateLimiter:
     """The minimum interval between the starts of requests to the same host, also when requests are made from
-    several threads (e.g. the parallel WARC readers of cdxt repackage)."""
+    several threads (e.g. the parallel WARC readers of cdxt repackage). Every attempt, also a retry, takes its
+    turn. Times are time.monotonic()."""
 
     def __init__(self, default_interval: float, intervals: Dict[str, float]):
         self.default_interval = default_interval
@@ -55,7 +56,7 @@ class HostRateLimiter:
         """After a request (which may have taken long, with retries): the next one may start the minimum interval
         from now, or later if that time is reserved already."""
         with self._lock:
-            next_fetch = time.time() + self.minimum_interval(hostname)
+            next_fetch = time.monotonic() + self.minimum_interval(hostname)
             self._next_fetch[hostname] = max(self._next_fetch.get(hostname, 0), next_fetch)
 
 
@@ -100,7 +101,6 @@ def myrequests_get(
         raise_warning_after_n_errors = WARNING_AFTER_N_ERRORS
 
     hostname = urlparse(url).hostname
-    _wait_for_turn(hostname, stop)
     minimum_interval = RATE_LIMITER.minimum_interval(hostname)
 
     if params:
@@ -124,6 +124,7 @@ def myrequests_get(
     while retry:
         if stop is not None and stop.is_set():
             raise RequestCancelled()
+        _wait_for_turn(hostname, stop)  # after the backoff of a retry: both the backoff and the interval hold
         try:
             LOGGER.debug('getting %s %r', url, params)
             resp = requests.get(url, params=params, headers=headers, timeout=(30.0, 30.0), allow_redirects=False)
@@ -192,7 +193,7 @@ def myrequests_get(
 
 def _wait_for_turn(hostname: str, stop: Optional[threading.Event]) -> None:
     """Wait until a request to `hostname` may start (see HostRateLimiter)."""
-    now = time.time()
+    now = time.monotonic()
     dt = RATE_LIMITER.reserve(hostname, now) - now
     if dt > 0:
         if dt > 3.1:
