@@ -23,15 +23,6 @@ _STOP = object()
 
 logger = logging.getLogger(__name__)
 
-# the name of the thread that reads the source (see Repackager._produce_range_jobs and source_still_reading)
-SOURCE_THREAD_NAME = 'cdxt-source'
-
-
-def source_threads() -> set:
-    """The source threads that are running: reading their input, maybe blocked on it (e.g. on stdin from a
-    process that keeps running) after their pipeline stopped."""
-    return {t for t in threading.enumerate() if t.name == SOURCE_THREAD_NAME and t.is_alive()}
-
 
 @dataclass
 class ThroughputTracker:
@@ -263,7 +254,6 @@ class Repackager:
         loop = asyncio.get_running_loop()
 
         def drain() -> int:
-            threading.current_thread().name = SOURCE_THREAD_NAME
             count = 0
             for job in self.source.iter_range_jobs():
                 if stop.is_set():
