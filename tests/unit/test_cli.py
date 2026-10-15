@@ -339,6 +339,22 @@ def test_repackage_fails_if_the_output_cannot_be_created(tmp_path):
     assert list(tmp_path.glob('out-*')) == []
 
 
+def test_a_blocked_source_thread_of_another_run_is_ignored(tmp_path):
+    """A source thread left waiting by another run in this process (e.g. of the Python API) does not make the
+    CLI exit without finalization: the error is raised as usual."""
+    import threading
+
+    from cdx_toolkit.repackage.repackager import SOURCE_THREAD_NAME
+
+    release = threading.Event()
+    other = threading.Thread(target=release.wait, name=SOURCE_THREAD_NAME, daemon=True)
+    other.start()
+    try:
+        test_repackage_fails_if_the_output_cannot_be_created(tmp_path)
+    finally:
+        release.set()
+
+
 def test_repackage_with_wb_counts_failed_captures(tmp_path, capsys):
     path = _write_captures(tmp_path / 'captures.jsonl', [IA_CAPTURE, IA_CAPTURE])
     fetched = [RuntimeError('404'), _make_fake_record()]

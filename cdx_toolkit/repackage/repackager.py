@@ -27,10 +27,10 @@ logger = logging.getLogger(__name__)
 SOURCE_THREAD_NAME = 'cdxt-source'
 
 
-def source_still_reading() -> bool:
-    """Whether a source thread is still reading its input (e.g. blocked on stdin from a process that keeps
-    running) after its pipeline stopped."""
-    return any(t.name == SOURCE_THREAD_NAME and t.is_alive() for t in threading.enumerate())
+def source_threads() -> set:
+    """The source threads that are running: reading their input, maybe blocked on it (e.g. on stdin from a
+    process that keeps running) after their pipeline stopped."""
+    return {t for t in threading.enumerate() if t.name == SOURCE_THREAD_NAME and t.is_alive()}
 
 
 @dataclass

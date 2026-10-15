@@ -47,31 +47,32 @@ def main(args=None):
             check_huggingface_hub()  # before any work, not when the first hf:// path is opened
         except RuntimeError as e:
             parser.exit(2, f'cdxt {cmd.cmd}: error: {e}\n')
+    running = source_threads()  # of other runs in this process (e.g. of the Python API)
     try:
         cmd.func(cmd, cmdline)
     except (UsageError, FileNotFoundError) as e:
-        exit_cli(parser, 2, f'cdxt {cmd.cmd}: error: {e}\n')
+        exit_cli(parser, 2, f'cdxt {cmd.cmd}: error: {e}\n', running)
     except IncompleteError as e:
-        exit_cli(parser, 1, f'cdxt {cmd.cmd}: error: {e}\n')
+        exit_cli(parser, 1, f'cdxt {cmd.cmd}: error: {e}\n', running)
     except KeyboardInterrupt:
-        exit_cli(parser, 130, f'cdxt {cmd.cmd}: interrupted\n')
+        exit_cli(parser, 130, f'cdxt {cmd.cmd}: interrupted\n', running)
     except Exception:
-        if not source_still_reading():
+        if not source_threads() - running:
             raise
-        exit_cli(parser, 1, traceback.format_exc())
+        exit_cli(parser, 1, traceback.format_exc(), running)
 
 
-def source_still_reading() -> bool:
-    """Whether cdxt repackage stopped while its source thread still waits for input (e.g. stdin)."""
+def source_threads() -> set:
+    """The running source threads of cdxt repackage (see cdx_toolkit.repackage.repackager.source_threads)."""
     repackager = sys.modules.get('cdx_toolkit.repackage.repackager')
-    return repackager is not None and repackager.source_still_reading()
+    return repackager.source_threads() if repackager is not None else set()
 
 
-def exit_cli(parser: ArgumentParser, status: int, message: str) -> None:
-    """Exit with the status and message. If a source thread still waits for its input, Python could hang at exit
-    (on Windows, closing stdin waits for a pending read of another thread): then exit without finalization; the
-    outputs are complete or removed at this point."""
-    if source_still_reading():
+def exit_cli(parser: ArgumentParser, status: int, message: str, running: set) -> None:
+    """Exit with the status and message. If the source thread of this run still waits for its input (not one of
+    the threads `running` before the run), Python could hang at exit (on Windows, closing stdin waits for a pending
+    read of another thread): then exit without finalization; the outputs are complete or removed at this point."""
+    if source_threads() - running:
         sys.stderr.write(message)
         logging.shutdown()
         sys.stdout.flush()
