@@ -16,6 +16,9 @@ all cores needs multiple processes. This orchestrator keeps that entirely inside
    record names the file it is in). Which worker writes which number depends on timing.
    Output honours ``--size`` as single-process mode does (files are a target size; the last
    file of each worker may be short, so up to N short files appear).
+4. A failing worker (or Ctrl-C) stops all of them: the parent sets an event shared by all workers, whose
+   pipelines then abort the file they are writing (completed files are kept). A worker that has not
+   stopped after ``CANCEL_TIMEOUT`` seconds is terminated.
 
 The WARC writer supports local and S3 output. For other fsspec destinations (e.g. an
 ``hf://`` bucket) the files are staged in a local directory under their final names and
@@ -32,8 +35,8 @@ import tempfile
 import time
 
 import fsspec
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-from typing import Dict, List, Optional, Tuple
+from concurrent.futures import FIRST_EXCEPTION, ProcessPoolExecutor, ThreadPoolExecutor, wait
+from typing import Callable, Dict, List, Optional, Tuple
 
 from cdx_toolkit.aws import configure_fsspec_s3
 from cdx_toolkit.record_io import RecordWriter, read_records
@@ -47,8 +50,12 @@ logger = logging.getLogger(__name__)
 # Concurrency for copying staged files to a non-S3 remote destination (override with CDXT_COPY_CONCURRENCY).
 _COPY_CONCURRENCY = int(os.environ.get('CDXT_COPY_CONCURRENCY', '16'))
 
-# The shared counter of output file numbers, set in each worker process by _init_worker.
+# Seconds the workers get to stop (and abort their current file) after a failure, before they are terminated.
+CANCEL_TIMEOUT = 60
+
+# The shared counter of output file numbers and the cancel event, set in each worker process by _init_worker.
 _FILE_SEQUENCE = None
+_CANCEL = None
 
 
 def _output_filename(prefix_path: str, sequence: int, subprefix: Optional[str] = None,
@@ -61,9 +68,10 @@ def _output_filename(prefix_path: str, sequence: int, subprefix: Optional[str] =
     return generate_warc_filename(prefix_path, sequence=sequence, writer_subprefix=subprefix, gzip=gzip)
 
 
-def _init_worker(file_sequence) -> None:
-    global _FILE_SEQUENCE
+def _init_worker(file_sequence, cancel) -> None:
+    global _FILE_SEQUENCE, _CANCEL
     _FILE_SEQUENCE = file_sequence
+    _CANCEL = cancel
     configure_fsspec_s3()  # a new process does not have the fsspec configuration of the main process
 
 
@@ -96,8 +104,49 @@ def _run_worker(cfg: Dict) -> RepackageResult:
         max_attempts=cfg['max_attempts'],
         max_file_size=cfg['max_file_size'],  # rotate at --size
         next_file_sequence=_next_file_sequence,
+        cancel=_CANCEL,
     )
     return repackager.run()
+
+
+def run_worker_processes(worker: Callable, configs: List, file_sequence, mp_context,
+                         cancel_timeout: float = None) -> List:
+    """Run worker(config) for each config, each in its own process; the results in the order of the configs.
+
+    The first failure (or KeyboardInterrupt) is raised as soon as it happens, after the other workers were
+    stopped: the shared cancel event is set, workers that have not started are cancelled, and running workers
+    get `cancel_timeout` seconds to stop (abort their current file) before they are terminated. A terminated
+    worker cannot abort an S3 multipart upload; an S3 lifecycle rule removes incomplete uploads."""
+    cancel_timeout = CANCEL_TIMEOUT if cancel_timeout is None else cancel_timeout
+    cancel = mp_context.Event()
+    ex = ProcessPoolExecutor(
+        max_workers=len(configs), mp_context=mp_context, initializer=_init_worker, initargs=(file_sequence, cancel)
+    )
+    futures = []
+    try:
+        futures = [ex.submit(worker, config) for config in configs]
+        done, _ = wait(futures, return_when=FIRST_EXCEPTION)
+        for future in done:
+            future.result()  # raises the first failure
+        results = [future.result() for future in futures]
+    except BaseException:
+        cancel.set()
+        for future in futures:
+            future.cancel()
+        _, running = wait(futures, timeout=cancel_timeout)
+        if running:
+            logger.error('%d worker(s) did not stop within %ds, terminating them (an S3 multipart upload of an '
+                         'unfinished file may be left incomplete)', len(running), cancel_timeout)
+            # ProcessPoolExecutor.terminate_workers() is new in Python 3.14
+            processes = list((getattr(ex, '_processes', None) or {}).values())
+            for process in processes:
+                process.terminate()
+            for process in processes:
+                process.join(timeout=10)
+        ex.shutdown(wait=False, cancel_futures=True)
+        raise
+    ex.shutdown(wait=True)
+    return results
 
 
 def _shard_record(job) -> dict:
@@ -185,10 +234,7 @@ def run_multiprocess_repackage(
         logger.info('Launching %d worker processes x %d readers', len(configs), readers_per_process)
         mp_context = multiprocessing.get_context()
         file_sequence = mp_context.Value('i', 0)
-        with ProcessPoolExecutor(
-            max_workers=len(configs), mp_context=mp_context, initializer=_init_worker, initargs=(file_sequence,)
-        ) as ex:
-            results = list(ex.map(_run_worker, configs))
+        results = run_worker_processes(_run_worker, configs, file_sequence, mp_context)
         result = sum(results, RepackageResult())
         total = result.written
         n_files = file_sequence.value

@@ -5,7 +5,6 @@ No S3 or fetching.
 """
 import multiprocessing
 import os
-from concurrent.futures import ProcessPoolExecutor
 
 from cdx_toolkit.repackage import multiprocess
 from cdx_toolkit.repackage.multiprocess import _copy_staged_files, _output_filename
@@ -29,10 +28,8 @@ def _take_numbers(n):
 def test_file_numbers_are_shared_across_processes():
     ctx = multiprocessing.get_context()
     counter = ctx.Value('i', 0)
-    with ProcessPoolExecutor(
-        max_workers=3, mp_context=ctx, initializer=multiprocess._init_worker, initargs=(counter,)
-    ) as ex:
-        numbers = [n for result in ex.map(_take_numbers, [5, 5, 5]) for n in result]
+    results = multiprocess.run_worker_processes(_take_numbers, [5, 5, 5], counter, ctx)
+    numbers = [n for result in results for n in result]
 
     # every file number is used exactly once, without gaps
     assert sorted(numbers) == list(range(1, 16))

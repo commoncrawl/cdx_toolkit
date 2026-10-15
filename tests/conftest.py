@@ -363,6 +363,19 @@ class InlineExecutor:
     def map(self, fn, items):
         return [fn(item) for item in items]
 
+    def submit(self, fn, *args):
+        import concurrent.futures
+
+        future = concurrent.futures.Future()
+        try:
+            future.set_result(fn(*args))
+        except Exception as e:
+            future.set_exception(e)
+        return future
+
+    def shutdown(self, wait=True, cancel_futures=False):
+        pass
+
 
 class S3Env:
     """S3 for a test: a local moto server with the buckets commoncrawl (the WARC files of WARC_RECORDS) and

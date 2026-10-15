@@ -58,6 +58,10 @@ class ThroughputTracker:
         )
 
 
+class RepackageCancelled(Exception):
+    """The pipeline was stopped from outside (its `cancel` event was set), e.g. because another process failed."""
+
+
 class Repackager:
     """Copy WARC records, byte for byte, from the WARC files of the range jobs (or the records replayed from a
     wayback machine) into a series of WARC files.
@@ -89,6 +93,7 @@ class Repackager:
         min_part_size: int = 5 * 1024 * 1024,  # 5 MiB (for upload)
         max_file_size: Optional[int] = 1 * 1024 * 1024 * 1024,  # 1 GiB (for WARC outputs)
         next_file_sequence: Optional[Callable[[int], int]] = None,
+        cancel=None,
     ):
         """Set up the pipeline.
 
@@ -110,6 +115,8 @@ class Repackager:
             max_file_size: Maximum byte size for individual WARC files (default: 1 GiB).
             next_file_sequence: Number of the next output file, given the current one
                 (default: current + 1).
+            cancel: Optional event (threading.Event, multiprocessing.Event): once it is set, the pipeline stops
+                like on a failure (the current file is aborted) and run() raises RepackageCancelled.
         """
         if n_parallel_readers < 1:
             raise ValueError(f'n_parallel_readers must be at least 1, not {n_parallel_readers}')
@@ -138,6 +145,7 @@ class Repackager:
         self.min_part_size = min_part_size
         self.max_file_size = max_file_size
         self.next_file_sequence = next_file_sequence  # see WarcFileSeries
+        self.cancel = cancel
 
     def run(self) -> RepackageResult:
         """Run the pipeline (runs run_async in an event loop).
@@ -154,7 +162,19 @@ class Repackager:
                 logger.info('Using uvloop event loop')
             except ImportError:
                 logger.warning('CDXT_UVLOOP=1 but uvloop is not installed; using default asyncio loop')
-        return runner(self.run_async())
+        try:
+            return runner(self.run_async())
+        except asyncio.CancelledError:
+            if self.cancel is not None and self.cancel.is_set():
+                raise RepackageCancelled('stopped (cancel event)') from None
+            raise
+
+    async def _watch_cancel(self, pipeline: asyncio.Task) -> None:
+        """Cancel the pipeline once the cancel event is set."""
+        while not self.cancel.is_set():
+            await asyncio.sleep(0.1)
+        logger.warning('Stopping: cancelled from outside')
+        pipeline.cancel()
 
     def s3_read_config(self):
         """botocore config of the S3 client for range reads: high throughput."""
@@ -290,12 +310,18 @@ class Repackager:
 
         feeder = asyncio.create_task(feed())
         tasks = [producer, *warc_readers, warc_writer, feeder]
+        watcher = None
+        if self.cancel is not None:
+            watcher = asyncio.create_task(self._watch_cancel(asyncio.current_task()))
+            tasks.append(watcher)
         try:
             done, _ = await asyncio.wait({feeder, warc_writer}, return_when=asyncio.FIRST_EXCEPTION)
             for task in done:
                 task.result()  # raises the exception of a failed task
             requested, readers_results = await feeder
             writer_tracker = await warc_writer
+            if watcher is not None:
+                watcher.cancel()
         except BaseException:
             stop.set()
             for task in tasks:

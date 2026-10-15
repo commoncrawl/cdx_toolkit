@@ -305,9 +305,11 @@ in the `warcinfo` record, and `--add-metadata-record FILE` to add a file
 A capture that cannot be fetched (after retries) does not stop the job: the
 other captures are still written, and at the end `cdxt repackage` logs how
 many captures were requested, written and failed, and exits with status 1.
-A failure to write the output stops the job at once; the WARC file being
-written is removed (or its S3 upload aborted), the files before it are
-complete.
+A failure to write the output stops the job at once, with `--processes` all
+processes; the WARC files being written are removed (or their S3 uploads
+aborted), the files before them are complete. A process that has not stopped
+after 60 seconds is terminated, which can leave an incomplete S3 multipart
+upload (an S3 lifecycle rule for incomplete uploads removes it).
 
 ### Migrating from the old commands
 

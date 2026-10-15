@@ -679,3 +679,40 @@ def test_ctrl_c_with_stdin_still_open(tmp_path):
         proc.stdin.close()
     assert proc.returncode != 0
     assert glob.glob(str(tmp_path / 'out-*')) == []
+
+
+def test_cancel_event_stops_the_pipeline_and_removes_the_file(tmp_path):
+    """The event set by the parent of the worker processes (when another worker failed)."""
+    from cdx_toolkit.repackage.repackager import RepackageCancelled
+
+    release, cancel = threading.Event(), threading.Event()
+
+    def captures():
+        yield CAPTURES[0]
+        release.wait()
+        yield CAPTURES[1]
+
+    outcome = []
+
+    def main():
+        repackager = Repackager(
+            source=RecordsSource(captures(), 'https://data.example.org', sort=False),
+            prefix_path=str(tmp_path / 'out'), writer_info={}, cancel=cancel,
+        )
+        try:
+            outcome.append(repackager.run())
+        except RepackageCancelled as e:
+            outcome.append(e)
+
+    with patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get):
+        thread = threading.Thread(target=main, daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 10
+        while not glob.glob(str(tmp_path / 'out-*')) and time.monotonic() < deadline:
+            time.sleep(0.01)  # the first record is being written
+        cancel.set()
+        thread.join(timeout=5)
+    release.set()
+    assert not thread.is_alive()
+    assert len(outcome) == 1 and isinstance(outcome[0], RepackageCancelled)
+    assert glob.glob(str(tmp_path / 'out-*')) == []
