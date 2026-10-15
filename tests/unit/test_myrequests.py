@@ -74,10 +74,10 @@ def test_dns_error_is_only_fatal_for_unknown_hosts(monkeypatch, host, fatal):
 
 
 def test_retries_take_their_turn(monkeypatch):
-    """Three parallel requests to a host, the first answered with a 503: its retry keeps the minimum interval
-    to the other requests too (it used to start together with the third one)."""
+    """Three parallel requests to a host, the first answered with a 503: every attempt, also the retry, reserves
+    its own turn, the minimum interval from the others (the retry used to start in the third request's turn).
+    The reserved times are checked, not the measured ones, which a slow machine delays."""
     import threading
-    import time
     from unittest.mock import Mock
 
     from cdx_toolkit import myrequests
@@ -85,27 +85,36 @@ def test_retries_take_their_turn(monkeypatch):
     host = 'retry-turn.example.org'
     interval = 0.1
     monkeypatch.setitem(myrequests.RATE_LIMITER.intervals, host, interval)
-    starts = []
+    reserved = []
+    original_reserve = myrequests.RATE_LIMITER.reserve
+
+    def reserve(hostname, now):
+        fetch_time = original_reserve(hostname, now)
+        reserved.append(fetch_time)
+        return fetch_time
+
+    monkeypatch.setattr(myrequests.RATE_LIMITER, 'reserve', reserve)
+    calls = []
     lock = threading.Lock()
 
     def get(url, **kwargs):
         with lock:
-            starts.append(time.monotonic())
-            first = len(starts) == 1
+            calls.append(url)
+            first = len(calls) == 1
         return Mock(status_code=503 if first else 200, text='')
 
     with patch('requests.get', side_effect=get):
         threads = [threading.Thread(target=myrequests_get, args=(f'https://{host}/{i}',)) for i in range(3)]
         for thread in threads:
             thread.start()
-            time.sleep(0.01)  # the first thread takes the first turn
         for thread in threads:
             thread.join()
 
-    assert len(starts) == 4
-    starts.sort()
-    gaps = [b - a for a, b in zip(starts, starts[1:])]
-    assert min(gaps) > interval * 0.8, gaps
+    assert len(calls) == 4
+    assert len(reserved) == 4  # one turn per attempt
+    reserved.sort()
+    gaps = [b - a for a, b in zip(reserved, reserved[1:])]
+    assert min(gaps) >= interval - 1e-9, gaps
 
 
 ABORTED = "Error: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))"
