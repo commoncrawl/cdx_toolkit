@@ -44,7 +44,8 @@
 	+ Python API of the new commands: `cdx_toolkit.indexes.open_index()` with `IndexQuery` (`records()`, `count()`, `explain()`)
 	  and `cdx_toolkit.repackage.repackage()`; `cdxt index` and `cdxt repackage` run the same code
 	+ deprecated `cdx_toolkit.warc.get_writer()` and `CDXToolkitWARCWriter` (FutureWarning): use `repackage()`
-	+ new extras: `athena`, `duckdb`, `hf`, `parquet`; `fsspec` and `aiofiles` are now required
+	+ new extras: `athena`, `duckdb`, `hf` (`huggingface_hub>=1.7.2`, the first version whose `HfFileSystem` handles
+	  Storage Buckets), `parquet`; `fsspec` and `aiofiles` are now required
 
 - 0.9.38
 	+ deprecated support for py3.7 and py.3.8

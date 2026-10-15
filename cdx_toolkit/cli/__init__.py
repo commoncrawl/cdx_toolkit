@@ -2,6 +2,7 @@ from argparse import ArgumentParser
 import sys
 
 from cdx_toolkit.aws import configure_fsspec_s3
+from cdx_toolkit.hf import check_huggingface_hub, uses_hf
 from cdx_toolkit.indexes import UsageError
 from cdx_toolkit.utils import get_version
 
@@ -38,6 +39,11 @@ def main(args=None):
     set_loglevel(cmd.verbose)
     configure_fsspec_s3()  # Common Crawl's S3 defaults for s3:// paths, unless configured by the user
     cmdline = ' '.join(['cdxt'] + list(args))
+    if uses_hf(args):
+        try:
+            check_huggingface_hub()  # before any work, not when the first hf:// path is opened
+        except RuntimeError as e:
+            parser.exit(2, f'cdxt {cmd.cmd}: error: {e}\n')
     try:
         cmd.func(cmd, cmdline)
     except (UsageError, FileNotFoundError) as e:

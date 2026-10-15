@@ -258,6 +258,10 @@ async def make_hf_reader(max_attempts: int = 5, base_backoff_seconds: float = 0.
     reading from a bucket.
     """
     import aiohttp
+
+    from cdx_toolkit.hf import check_huggingface_hub
+
+    check_huggingface_hub()
     from huggingface_hub import get_token
 
     timeout = aiohttp.ClientTimeout(total=300, sock_connect=15)

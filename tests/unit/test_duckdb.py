@@ -77,7 +77,7 @@ def test_connection_setup_and_hf_filesystem(monkeypatch):
     fake_duckdb = MagicMock(connect=MagicMock(return_value=con))
     hf_fs = MagicMock()
 
-    fake_hf = MagicMock(HfFileSystem=MagicMock(return_value=hf_fs))
+    fake_hf = MagicMock(HfFileSystem=MagicMock(return_value=hf_fs), __version__='1.7.2')
     query = "SELECT count(*) AS n FROM read_parquet(['hf://buckets/x/y/*.parquet', 's3://commoncrawl/x.parquet'])"
     with patch.object(duckdb_source, '_HAS_DUCKDB', True), \
             patch.object(duckdb_source, 'duckdb', fake_duckdb, create=True), \

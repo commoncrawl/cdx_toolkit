@@ -20,7 +20,7 @@ optional_athena_requirements = ['boto3']
 # `cdxt index cc-url-index-s3` and other parquet indexes
 optional_duckdb_requirements = ['duckdb', 'pytz']  # pytz: DuckDB returns timestamps with time zone
 # Hugging Face Storage Buckets (hf://): `cdxt index cc-url-index-hf`, `cdxt repackage` reads and writes
-optional_hf_requirements = ['huggingface_hub>=0.30', 'aiohttp']
+optional_hf_requirements = ['huggingface_hub>=1.7.2', 'aiohttp']
 # Parquet output of `cdxt index` (and Parquet input of `cdxt repackage`)
 optional_parquet_requirements = ['pyarrow']
 

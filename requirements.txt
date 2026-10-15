@@ -20,7 +20,7 @@ duckdb
 pytz
 
 # optional Hugging Face dependencies (install via cdx_toolkit[hf])
-huggingface_hub>=0.30
+huggingface_hub>=1.7.2
 aiohttp
 
 # optional Parquet dependencies (install via cdx_toolkit[parquet])

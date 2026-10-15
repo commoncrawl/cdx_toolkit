@@ -77,6 +77,9 @@ def iter_duckdb_rows(query: str, region_name: Optional[str] = None) -> Iterator[
             _configure_httpfs(con, s3='s3://' in query, region_name=region_name)
         if 'hf://buckets/' in query:
             # DuckDB cannot read Hugging Face Storage Buckets itself; use their fsspec filesystem.
+            from cdx_toolkit.hf import check_huggingface_hub
+
+            check_huggingface_hub()
             from huggingface_hub import HfFileSystem
 
             con.register_filesystem(HfFileSystem())

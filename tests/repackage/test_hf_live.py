@@ -8,6 +8,7 @@ import json
 import os
 
 import fsspec
+import pytest
 from warcio.archiveiterator import ArchiveIterator
 
 from cdx_toolkit.cli import main
@@ -99,3 +100,27 @@ def test_repackage_from_hf_parallel_readers(tmpdir):
                HF_PREFIX, '--parallel-readers', '3'])
 
     assert _responses(os.path.join(str(tmpdir), 'TEST_hf-001.warc.gz')) == _expected()
+
+
+@requires_live_hf
+def test_index_output_to_hf_bucket(tmpdir, hf_tmpdir, capsys):
+    """cdxt index writes to a bucket: a single output, and one output per CDX file, which needs a new or empty
+    directory (also in a bucket)."""
+    cdx = os.path.join(str(tmpdir), 'in', 'index.cdx')
+    os.makedirs(os.path.dirname(cdx))
+    with open(cdx, 'w') as f:
+        for capture in CAPTURES:
+            f.write(f'org,commoncrawl)/ {capture["timestamp"]} {json.dumps(capture)}\n')
+
+    main(args=['index', cdx, '--domain', 'commoncrawl.org', '-o', f'{hf_tmpdir}/captures.jsonl'])
+    with fsspec.open(f'{hf_tmpdir}/captures.jsonl', 'rt') as f:
+        assert [json.loads(line)['url'] for line in f] == [c['url'] for c in CAPTURES]
+
+    main(args=['index', os.path.join(str(tmpdir), 'in', '*.cdx'), '--domain', 'commoncrawl.org',
+               '-o', f'{hf_tmpdir}/filtered'])
+    with fsspec.open(f'{hf_tmpdir}/filtered/index.cdx', 'rt') as f:
+        assert len(f.read().splitlines()) == len(CAPTURES)
+    with pytest.raises(SystemExit):
+        main(args=['index', os.path.join(str(tmpdir), 'in', '*.cdx'), '--domain', 'commoncrawl.org',
+                   '-o', f'{hf_tmpdir}/filtered'])
+    assert 'is not empty' in capsys.readouterr().err
