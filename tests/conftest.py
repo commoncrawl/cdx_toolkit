@@ -11,6 +11,10 @@ CDXT_LIVE_TESTS is a comma-separated list of the services to test live instead (
 - s3: the S3 tests run against AWS, and the tests of DuckDB over s3://commoncrawl run (requires_live_s3)
 - athena: the Athena tests run (requires_aws_athena)
 - hf: the tests of the Hugging Face Storage Bucket hf://buckets/commoncrawl/commoncrawl run (requires_live_hf)
+
+The tests that can run live are marked `live` and `live_<service>` (see live_marks), e.g.
+`CDXT_LIVE_TESTS=all pytest -m live` runs only the live tests, `CDXT_LIVE_TESTS=s3 pytest -m live_s3` only those of S3.
+Without CDXT_LIVE_TESTS, the marked tests are skipped (s3, athena, hf) or run with mocked responses (http, s3).
 """
 import gzip
 import json
@@ -104,6 +108,26 @@ def _live_services(value: str) -> frozenset:
 
 LIVE_TESTS = _live_services(os.environ.get('CDXT_LIVE_TESTS', ''))
 
+
+def pytest_configure(config):
+    config.addinivalue_line('markers', 'live: a test that runs live with CDXT_LIVE_TESTS (any service)')
+    for service in LIVE_SERVICES:
+        config.addinivalue_line('markers', f'live_{service}: a test that runs live with CDXT_LIVE_TESTS={service}')
+
+
+def live_marks(func, service):
+    """Marks a test that runs live with CDXT_LIVE_TESTS=<service>: `live` and `live_<service>`."""
+    return pytest.mark.live(getattr(pytest.mark, f'live_{service}')(func))
+
+
+def pytest_collection_modifyitems(config, items):
+    """The tests with the mocked data.commoncrawl.org make HTTP requests with CDXT_LIVE_TESTS=http."""
+    for item in items:
+        if 'mock_data_commoncrawl' in item.fixturenames and not item.get_closest_marker('live_http'):
+            item.add_marker(pytest.mark.live)
+            item.add_marker(pytest.mark.live_http)
+
+
 # Cache for AWS S3/Athena access check to avoid repeated network calls
 _aws_s3_access_cache = None
 _aws_athena_access_cache = None
@@ -156,6 +180,7 @@ def check_aws_s3_access():
 def requires_live_s3(func):
     """Pytest decorator for tests that need AWS S3 itself (not mockable, e.g. DuckDB over s3://commoncrawl):
     they only run with CDXT_LIVE_TESTS=s3 and AWS S3 access."""
+    func = live_marks(func, 's3')
     if 's3' not in LIVE_TESTS:
         return pytest.mark.skip(reason='needs AWS S3; set CDXT_LIVE_TESTS=s3 to run it')(func)
     if not _HAS_BOTOCORE or not _HAS_FSSPEC:
@@ -173,6 +198,7 @@ def live_aws_s3_access():
 def requires_aws_s3(func):
     """Pytest decorator for S3 tests: they run against a local moto server (the s3_env fixture), or against
     AWS with CDXT_LIVE_TESTS=s3."""
+    func = live_marks(func, 's3')
     if 's3' in LIVE_TESTS:
         return pytest.mark.usefixtures('s3_env')(requires_live_s3(func))
     if not _HAS_MOTO:
@@ -201,6 +227,7 @@ def check_aws_athena_access():
 
 def requires_aws_athena(func):
     """Pytest decorator that skips test if AWS Athena access is not available (needs CDXT_LIVE_TESTS=athena)."""
+    func = live_marks(func, 'athena')
     if 'athena' not in LIVE_TESTS:
         return pytest.mark.skip(reason='needs AWS Athena; set CDXT_LIVE_TESTS=athena to run it')(func)
     if not _HAS_BOTO3:
@@ -221,6 +248,7 @@ def live_aws_athena_access():
 def requires_live_hf(func):
     """Pytest decorator for tests of the Hugging Face Storage Bucket hf://buckets/commoncrawl/commoncrawl: they only
     run with CDXT_LIVE_TESTS=hf (public reads need no token, but have lower rate limits without one)."""
+    func = live_marks(func, 'hf')
     if 'hf' not in LIVE_TESTS:
         return pytest.mark.skip(reason='needs Hugging Face; set CDXT_LIVE_TESTS=hf to run it')(func)
     if not _HAS_HF:
@@ -575,9 +603,9 @@ def conditional_mock_responses(func=None, *, auto_mock_data: bool = True):
                 with patch('requests.get', side_effect=_custom_behavior_with_original(requests.get)):
                     return f(*args, **kwargs)
 
-            return wrapper
+            return live_marks(wrapper, 'http')
 
-        return f
+        return live_marks(f, 'http')
 
     if func is None:
         # Called with arguments: @conditional_mock_responses(auto_mock_data=False)
