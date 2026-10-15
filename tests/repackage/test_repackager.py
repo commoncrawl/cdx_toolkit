@@ -600,8 +600,10 @@ def test_writer_error_with_a_blocked_source(tmp_path):
 
 
 CHILD = '''
+import faulthandler
 import sys
 from unittest.mock import patch
+faulthandler.dump_traceback_later(20, exit=True)  # the stacks of all threads if it hangs
 from cdx_toolkit.cli import main
 from cdx_toolkit.repackage.writers.local import LocalOutputFile
 from tests.repackage.test_repackager import fake_get
@@ -623,21 +625,26 @@ def test_writer_error_with_stdin_still_open(tmp_path):
     import sys
 
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    proc = subprocess.Popen(
-        [sys.executable, '-c', CHILD, str(tmp_path / 'out')], cwd=root, stdin=subprocess.PIPE,
-        stderr=subprocess.PIPE, text=True,
-    )
-    try:
-        proc.stdin.write(json.dumps(CAPTURES[0]) + '\n')
-        proc.stdin.flush()  # and stdin stays open
-        proc.wait(timeout=30)
-        stderr = proc.stderr.read()
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-        proc.stdin.close()
-    assert proc.returncode != 0
-    assert 'disk full' in stderr
+    # stderr to a file: a pipe that is not read while the process runs would block it once full (a few KB on
+    # Windows)
+    stderr_path = tmp_path / 'stderr.txt'
+    with open(stderr_path, 'w') as stderr_file:
+        proc = subprocess.Popen(
+            [sys.executable, '-c', CHILD, str(tmp_path / 'out')], cwd=root, stdin=subprocess.PIPE,
+            stderr=stderr_file, text=True,
+        )
+        try:
+            proc.stdin.write(json.dumps(CAPTURES[0]) + '\n')
+            proc.stdin.flush()  # and stdin stays open
+            proc.wait(timeout=30)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            proc.stdin.close()
+    stderr = stderr_path.read_text()
+    assert proc.returncode != 0, stderr
+    assert 'disk full' in stderr, stderr
     assert glob.glob(str(tmp_path / 'out-*')) == []
 
 
@@ -663,7 +670,7 @@ def test_ctrl_c_with_stdin_still_open(tmp_path):
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     proc = subprocess.Popen(
         [sys.executable, '-c', CHILD_WITHOUT_FAILURE, str(tmp_path / 'out')], cwd=root, stdin=subprocess.PIPE,
-        stderr=subprocess.PIPE, text=True,
+        stderr=subprocess.DEVNULL, text=True,  # not a pipe that nobody reads (it would block the process once full)
     )
     try:
         proc.stdin.write(json.dumps(CAPTURES[0]) + '\n')
