@@ -150,21 +150,98 @@ extension but use the CDXJ format (crawl index JSON). Use `--fields url,status,t
 fields are written.
 
 `--count` prints the number of captures instead. For the CDX API this is
-a cheap estimate based on the number of index pages; for SQL indexes it is
-an exact `count(*)`.
+a cheap estimate based on the number of index pages; for CDX files it is an
+exact count, and for SQL indexes an exact `count(*)`.
 
-If you don't specify much about the crawls or dates or number of
-records you're interested in, some default limits will kick in to
-prevent overly-large queries. These default limits include a maximum
-of 1000 records (`--limit 1000`) and a limit of 1 year of CC indexes.
-To exceed these limits, use `--limit` and `--crawl` or `--from` and
-`--to`.
+If you don't specify the crawls or dates you're interested in, queries
+of `cc` are limited to the CC indexes of the most recent year, to
+prevent overly-large queries. To exceed this limit, use `--crawl` or
+`--from` and `--to`. There is no default `--limit`.
 
 If it seems like nothing is happening, add `-v` or `-vv`:
 
 ```
 $ cdxt -vv index cc --url 'commoncrawl.org/*' --count
 ```
+
+#### Selecting particular CCF crawls
+
+Common Crawl's data is divided into "crawls", which were yearly at the
+start, and are currently done monthly. There are over 100 of them.
+[You can find details about these crawls here.](https://data.commoncrawl.org/crawl-data/index.html)
+
+Unlike some web archives, CCF doesn't have a single CDX index that
+covers all of these crawls -- we have 1 index per crawl. The way
+you ask for a particular crawl is:
+
+```
+$ cdxt index cc --crawl CC-MAIN-2024-33 --url 'commoncrawl.org/*'
+```
+
+- `--crawl CC-MAIN-2024-33` is a single crawl.
+- `--crawl 3` is the latest 3 crawls.
+- `--crawl CC-MAIN-2018` will match all of the crawls from 2018.
+- `--crawl CC-MAIN-2018,CC-MAIN-2019` will match all of the crawls from 2018 and 2019.
+
+CCF also has a hive-sharded parquet index (called the columnar index)
+that covers all of our crawls. Querying broad time ranges is much
+faster with the columnar index. You can find more information about
+this index at [the blog post about it](https://commoncrawl.org/blog/index-to-warc-files-and-urls-in-columnar-format).
+
+The Internet Archive cdx index is organized as a single crawl that goes
+from the very beginning until now. That's why there is no `--crawl` for
+`ia`, and no default time range: without `--from` and `--to`, a query of
+`ia` starts at the beginning of IA's crawl.
+
+#### Selecting by time
+
+In most cases you'll probably use --crawl to select the time range for
+Common Crawl queries, but for the Internet Archive you'll need to specify
+a time range like this:
+
+```
+$ cdxt index ia --limit 1 --from 2008 --to 200906302359 --url 'commoncrawl.org/*'
+```
+
+In this example the time range starts at the beginning of 2008 and
+ends on June 30, 2009 at 23:59. All times are in UTC. If you do not
+specify a time range (and also don't use `--crawl`), `cc` queries get the
+most recent year, and `ia` queries all years.
+
+#### Filter syntax
+
+Filters can be used to limit captures to a subset of the results.
+
+Any field name in the output of `cdxt index` can be used in a
+filter.  These field names are appropriately renamed if the source is
+'ia'.  The different syntax of filter modifiers for 'ia' and 'cc' is
+not fully abstracted away by cdx_toolkit.
+
+The basic syntax of a filter is `[modifier]field:expression`, for
+example `=status:200` or `!=status:200`.
+
+'cc'-style filters (pywb) come in six flavors: substring match, exact
+string, full-match regex, and their inversions. These are indicated by
+a modifier of nothing, '=', '\~', '!', '!=', and '!\~', respectively.
+
+'ia'-style filters (Wayback/OpenWayback) come in two flavors, a full-match
+regex and an inverted full-match regex: 'status:200' and '!status:200'
+
+Multiple filters will be combined with AND. For example, to limit
+captures to those which do not have status 200 and do not have status 404,
+
+```
+$ cdxt index cc --filter '!=status:200' --filter '!=status:404' ...
+```
+
+Note that filters that discard large numbers of captures put a high
+load on the CDX server -- for example, a filter that returns just a
+few captures from a domain that has tens of millions of captures is
+likely to run very slowly and annoy the owner of the CDX server.
+
+See https://github.com/webrecorder/pywb/wiki/CDX-Server-API#filter (pywb)
+and https://github.com/internetarchive/wayback/tree/master/wayback-cdx-server#filtering (wayback)
+for full details of filter modifiers.
 
 ### cdxt repackage
 
@@ -249,51 +326,8 @@ All options now go after the command. `iter --csv`/`--jsonl` became
 gone), `--get` is no longer needed (`--closest` uses a single query), and
 `--url-fgrep`/`--url-fgrepv` moved from `warc` to `index`.
 
-## Selecting particular CCF crawls
 
-Common Crawl's data is divided into "crawls", which were yearly at the
-start, and are currently done monthly. There are over 100 of them.
-[You can find details about these crawls here.](https://data.commoncrawl.org/crawl-data/index.html)
-
-Unlike some web archives, CCF doesn't have a single CDX index that
-covers all of these crawls -- we have 1 index per crawl. The way
-you ask for a particular crawl is:
-
-```
-$ cdxt index cc --crawl CC-MAIN-2024-33 --url 'commoncrawl.org/*'
-```
-
-- `--crawl CC-MAIN-2024-33` is a single crawl.
-- `--crawl 3` is the latest 3 crawls.
-- `--crawl CC-MAIN-2018` will match all of the crawls from 2018.
-- `--crawl CC-MAIN-2018,CC-MAIN-2019` will match all of the crawls from 2018 and 2019.
-
-CCF also has a hive-sharded parquet index (called the columnar index)
-that covers all of our crawls. Querying broad time ranges is much
-faster with the columnar index. You can find more information about
-this index at [the blog post about it](https://commoncrawl.org/blog/index-to-warc-files-and-urls-in-columnar-format).
-
-The Internet Archive cdx index is organized as a single crawl that goes
-from the very beginning until now. That's why there is no `--crawl` for
-`ia`. Note that cdx queries to `ia` will default to one year year
-and limit 1000 entries if you do not specify `--from`, `--to`, and `--limit`.
-
-## Selecting by time
-
-In most cases you'll probably use --crawl to select the time range for
-Common Crawl queries, but for the Internet Archive you'll need to specify
-a time range like this:
-
-```
-$ cdxt index ia --limit 1 --from 2008 --to 200906302359 --url 'commoncrawl.org/*'
-```
-
-In this example the time range starts at the beginning of 2008 and
-ends on June 30, 2009 at 23:59. All times are in UTC. If you do not
-specify a time range (and also don't use `--crawl`), you'll get the
-most recent year.
-
-## The full syntax for command-line tools
+### The full syntax for command-line tools
 
 ```
 $ cdxt --help
@@ -364,40 +398,6 @@ There's a full example of selecting a subset of captures and writing them
 into a WARC file in [examples/iter-and-warc.py](examples/iter-and-warc.py).
 (`cdx_toolkit.warc.get_writer()` is deprecated: use `repackage()`.)
 
-## Filter syntax
-
-Filters can be used to limit captures to a subset of the results.
-
-Any field name in the output of `cdxt index` can be used in a
-filter.  These field names are appropriately renamed if the source is
-'ia'.  The different syntax of filter modifiers for 'ia' and 'cc' is
-not fully abstracted away by cdx_toolkit.
-
-The basic syntax of a filter is `[modifier]field:expression`, for
-example `=status:200` or `!=status:200`.
-
-'cc'-style filters (pywb) come in six flavors: substring match, exact
-string, full-match regex, and their inversions. These are indicated by
-a modifier of nothing, '=', '\~', '!', '!=', and '!\~', respectively.
-
-'ia'-style filters (Wayback/OpenWayback) come in two flavors, a full-match
-regex and an inverted full-match regex: 'status:200' and '!status:200'
-
-Multiple filters will be combined with AND. For example, to limit
-captures to those which do not have status 200 and do not have status 404,
-
-```
-$ cdxt index cc --filter '!=status:200' --filter '!=status:404' ...
-```
-
-Note that filters that discard large numbers of captures put a high
-load on the CDX server -- for example, a filter that returns just a
-few captures from a domain that has tens of millions of captures is
-likely to run very slowly and annoy the owner of the CDX server.
-
-See https://github.com/webrecorder/pywb/wiki/CDX-Server-API#filter (pywb)
-and https://github.com/internetarchive/wayback/tree/master/wayback-cdx-server#filtering (wayback)
-for full details of filter modifiers.
 
 ## CDX Jargon, Field Names, and such
 
@@ -432,8 +432,8 @@ should be present in all records, if you want to know exactly what it
 is.
 
 The **limit** argument limits how many captures will be returned.  To
-help users not shoot themselves in the foot, a limit of 1,000 is
-applied to --get and .get() calls.
+help users not shoot themselves in the foot, a default limit of 1,000 is
+applied to `CDXFetcher.get()` calls.
 
 A **filter** allows a user to select a subset of CDX records, reducing
 network traffic between the CDX API server and the user. For example,
@@ -447,8 +447,8 @@ status of '-', not 200.
 CDX API servers support a **paged interface** for efficient access to
 large sets of URLs. cdx_toolkit iterators always use the paged interface.
 cdx_toolkit is also polite to CDX servers by being single-threaded and
-serial. If it's not fast enough for you, consider downloading Common
-Crawl's index files directly.
+serial. If it's not fast enough for you, consider querying Common
+Crawl's index files directly with `cdxt index` (CDX files or the columnar index).
 
 A **digest** is a sha1 checksum of the contents of a capture. The
 purpose of a digest is to be able to easily figure out if 2 captures
@@ -483,11 +483,9 @@ figuring out the charset using an algorithm similar to browsers.
 
 WARC generation should do smart(er) things with revisit records.
 
-Right now the CC code selects which monthly CC indices to use based
-solely on date ranges. It would be nice to have an alternative so that
-a client could iterate against the most recent N CC indices, and
-also have the default one-year lookback use an entire monthly index
-instead of a partial one.
+Without `--crawl`, the CC code selects which monthly CC indices to use
+based solely on date ranges. It would be nice to have the default
+one-year lookback use an entire monthly index instead of a partial one.
 
 ## Status
 
