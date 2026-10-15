@@ -24,6 +24,20 @@ previously_seen_hostnames = {
 }
 
 
+# A CDX index server (pywb) that cannot read its index (e.g. from S3) answers with the text of the exception, e.g.
+# "Error: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))", and a
+# status that is not retried otherwise: a temporary failure
+TEMPORARY_CDX_ERRORS = (
+    'Connection aborted', 'RemoteDisconnected', 'Connection reset', 'Read timed out', 'ConnectTimeout',
+    'Max retries exceeded',
+)
+
+
+def is_temporary_cdx_error(resp) -> bool:
+    text = resp.text[:1000]
+    return text.startswith('Error:') and any(marker in text for marker in TEMPORARY_CDX_ERRORS)
+
+
 def dns_fatal(hostname) -> bool:
     """We have a dns error, should we fail immediately or not? Not for a host that worked before (the error may be
     temporary)."""
@@ -128,7 +142,8 @@ def myrequests_get(
         try:
             LOGGER.debug('getting %s %r', url, params)
             resp = requests.get(url, params=params, headers=headers, timeout=(30.0, 30.0), allow_redirects=False)
-            if cdx and resp.status_code in {400, 404}:
+            temporary_cdx_error = cdx and is_temporary_cdx_error(resp)
+            if cdx and resp.status_code in {400, 404} and not temporary_cdx_error:
                 # 400: ia html error page -- probably page= is too big -- not an error
                 # 404: pywb {'error': 'No Captures found for: www.pbxxxxxxm.com/*'} -- not an error
                 LOGGER.debug('giving up with status %d, no captures found', resp.status_code)
@@ -137,7 +152,7 @@ def myrequests_get(
             if allow404 and resp.status_code == 404:
                 retry = False
                 break
-            if resp.status_code in {429, 500, 502, 503, 504, 509}:  # pragma: no cover
+            if resp.status_code in {429, 500, 502, 503, 504, 509} or temporary_cdx_error:
                 # 503=slow down, 50[24] are temporary outages, 500=Amazon S3 generic error
                 # CC takes a 503 from storage and then emits a 500 with error text in resp.text
                 # I have never seen IA or CC send 429 or 509, but just in case...
