@@ -195,3 +195,43 @@ def test_records_url_fgrep():
         records = list(backend.records(query))
 
     assert [r['url'] for r in records] == ['http://example.com/keep/this']
+
+
+def test_cdx_api_hostname_is_exact():
+    """matchType=host selects the host with and without www.: the other host's captures are dropped before the
+    limit (which is not sent to the server)."""
+    results = {
+        'www.example.com': [
+            _capture('http://example.com/'), _capture('https://EXAMPLE.com/a'),
+            _capture('http://www.example.com/'), _capture('https://www.example.com:8443/b'),
+            _capture('http://www.example.com/c'),
+        ],
+        'example.org/*': [_capture('http://example.org/')],
+    }
+    with patch('cdx_toolkit.CDXFetcher') as fetcher:
+        fetcher.return_value.iter.side_effect = lambda url, **params: iter(results[url])
+
+        records = list(CdxApiBackend('cc').records(IndexQuery(hostnames=['WWW.example.com.'], limit=2)))
+        assert [r['url'] for r in records] == ['http://www.example.com/', 'https://www.example.com:8443/b']
+        assert fetcher.return_value.iter.call_args.kwargs == {'matchType': 'host'}  # no server limit
+
+        # combined with another selector: a union
+        query = IndexQuery(hostnames=['www.example.com'], urls=['example.org/*'])
+        records = list(CdxApiBackend('cc').records(query))
+        assert [r['url'] for r in records] == [
+            'http://example.org/', 'http://www.example.com/', 'https://www.example.com:8443/b',
+            'http://www.example.com/c',
+        ]
+
+    plan = CdxApiBackend('cc').explain(IndexQuery(hostnames=['www.example.com'], limit=2))
+    assert plan == ('cc: url=www.example.com matchType=host\n  only captures of the host www.example.com\n'
+                    'limit: 2 (after removing duplicates and other hosts)\n')
+
+
+def test_cdx_api_closest_with_hostname():
+    with patch('cdx_toolkit.CDXFetcher') as fetcher:
+        fetcher.return_value.get.return_value = [_capture('http://example.com/'), _capture('http://www.example.com/')]
+        query = IndexQuery(hostnames=['www.example.com'], closest='20170615', limit=1)
+        records = list(CdxApiBackend('cc').records(query))
+    assert [r['url'] for r in records] == ['http://www.example.com/']
+    assert fetcher.return_value.get.call_args.kwargs == {'closest': '20170615', 'matchType': 'host'}

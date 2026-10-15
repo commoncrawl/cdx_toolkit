@@ -151,8 +151,10 @@ extension but use the CDXJ format (crawl index JSON). Use `--fields url,status,t
 fields are written.
 
 `--count` prints the number of captures instead. For the CDX API this is
-a cheap estimate based on the number of index pages; for CDX files it is an
-exact count, and for SQL indexes an exact `count(*)`.
+a cheap estimate based on the number of index pages (for `--hostname`, of the
+host with and without `www.`, which the CDX API does not distinguish; the
+captures of the other one are dropped when they are read); for CDX files it is
+an exact count, and for SQL indexes an exact `count(*)`.
 
 If you don't specify the crawls or dates you're interested in, queries
 of `cc` are limited to the CC indexes of the most recent year, to
