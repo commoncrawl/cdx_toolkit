@@ -55,20 +55,69 @@ def surt_tld(surt: str) -> str:
     return surt.split(',', 1)[0].split(')', 1)[0]
 
 
+def reversed_host(host: str) -> Optional[str]:
+    """The url_host_name_reversed of a host (e.g. www.example.com -> com.example.www), None for an IP address or
+    a host with other characters than letters, digits, dot and hyphen (these get no url_host_name_reversed
+    predicates)."""
+    labels = host.split('.')
+    if not _SQL_LITERAL_RE.match(host) or not all(labels) or all(label.isdigit() for label in labels):
+        return None
+    return '.'.join(reversed(labels))
+
+
+def reversed_host_range(reversed_prefix: str) -> str:
+    """url_host_name_reversed values starting with the reversed host: the host and its subdomains (and a few more
+    hosts, e.g. com.example-shop for com.example). A range, not a LIKE: the engines skip the row groups outside it
+    by their min/max statistics (the index is sorted by url_surtkey, which follows url_host_name_reversed)."""
+    escape_sql_literal(reversed_prefix)  # validates
+    return f"url_host_name_reversed >= '{reversed_prefix}' AND url_host_name_reversed < '{reversed_prefix}/'"
+
+
+def surt_host_hint(surt: str) -> Optional[str]:
+    """The url_host_name_reversed range of the hosts of a SURT key or prefix (e.g. 'com,example)/path' or
+    'com,example,'), None if it has no plain host (a port, an IP address)."""
+    host = surt.split(')', 1)[0].rstrip(',')
+    reversed_prefix = reversed_host('.'.join(reversed(host.split(',')))) if host else None
+    return reversed_host_range(reversed_prefix) if reversed_prefix else None
+
+
+def hostname_predicate(hostname: str) -> str:
+    """Captures of the exact host: url_host_name, and url_host_name_reversed for the min/max statistics (see
+    reversed_host_range)."""
+    predicate = f'url_host_name = {escape_sql_literal(hostname)}'
+    reversed_name = reversed_host(hostname)
+    if reversed_name is None:
+        return predicate
+    return f"(url_host_name_reversed = '{reversed_name}' AND {predicate})"
+
+
 def domain_predicate(domain: str) -> str:
     """Captures of the domain and its subdomains (like --domain for CDX files), e.g. for blog.example.com:
 
-        url_host_registered_domain IN ('blog.example.com', 'example.com')
-        AND (url_surtkey LIKE 'com,example,blog)%' OR url_surtkey LIKE 'com,example,blog,%')
+        url_host_name_reversed >= 'com.example.blog' AND url_host_name_reversed < 'com.example.blog/'
+        AND (url_host_name_reversed = 'com.example.blog' OR url_host_name_reversed LIKE 'com.example.blog.%')
 
-    The SURT prefixes give the exact host boundary; the registered domain, which is one of the suffixes of the
-    domain, makes the query cheaper (an equality the engines can push down)."""
+    The range lets the engines skip the row groups of other hosts (see reversed_host_range), the small
+    dictionary-encoded url_host_name_reversed gives the exact host boundary. An IP address is matched by its
+    url_surtkey prefixes and registered domain instead."""
     surts = domain_to_surts(domain)
     labels = surts[0][:-1].split(',')[::-1]  # canonical, e.g. without www.
+    reversed_domain = reversed_host('.'.join(labels))
+    if reversed_domain is not None:
+        return (f'({reversed_host_range(reversed_domain)} AND (url_host_name_reversed = \'{reversed_domain}\' '
+                f"OR url_host_name_reversed LIKE '{reversed_domain}.%'))")
     suffixes = ['.'.join(labels[i:]) for i in range(len(labels) - 1)] or labels
     registered = ', '.join(escape_sql_literal(suffix) for suffix in suffixes)
     surt_match = ' OR '.join(f'url_surtkey {sql_like_prefix(surt)}' for surt in surts)
     return f'(url_host_registered_domain IN ({registered}) AND ({surt_match}))'
+
+
+def surt_predicate(surt: str, prefix: bool) -> str:
+    """Captures of a url_surtkey (prefix), with the url_host_name_reversed range of its host for the min/max
+    statistics (see surt_host_hint)."""
+    predicate = f'url_surtkey {sql_like_prefix(surt)}' if prefix else f'url_surtkey = {quote_sql_string(surt)}'
+    hint = surt_host_hint(surt)
+    return f'({hint} AND {predicate})' if hint else predicate
 
 
 def build_where_sql(query: IndexQuery, crawls: Optional[List[str]] = None) -> str:
@@ -90,10 +139,10 @@ def build_where_sql(query: IndexQuery, crawls: Optional[List[str]] = None) -> st
     tlds |= {surt_tld(s) for s in surt_prefixes + surts}
     query_tlds = ' OR '.join(f'url_host_tld = {escape_sql_literal(t)}' for t in sorted(tlds))
 
-    host_predicates = [f'url_host_name = {escape_sql_literal(h)}' for h in hostnames]
+    host_predicates = [hostname_predicate(h) for h in hostnames]
     host_predicates += [domain_predicate(d) for d in domains]
-    host_predicates += [f'url_surtkey = {quote_sql_string(s)}' for s in surts]
-    host_predicates += [f'url_surtkey {sql_like_prefix(s)}' for s in surt_prefixes]
+    host_predicates += [surt_predicate(s, prefix=False) for s in surts]
+    host_predicates += [surt_predicate(s, prefix=True) for s in surt_prefixes]
     query_hosts = ' OR '.join(host_predicates)
 
     clauses = [

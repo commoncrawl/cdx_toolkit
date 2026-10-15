@@ -22,6 +22,9 @@
 	  prefixes (`--url-file-type domain` for host lists), one output per CDX file for an `-o` path without extension,
 	  `--processes`
 	+ SQL indexes: `--url` patterns (matched against `url_surtkey`), `--from`/`--to` (fetch time), `--language` (primary content language, three-letter ISO 639-3 codes)
+	+ SQL indexes: `--hostname`, `--domain` and `--url` select by `url_host_name_reversed`, which follows the sort order
+	  of the index, so DuckDB (and Athena) skip the row groups of other hosts by their min/max statistics; `--domain` no
+	  longer reads `url_surtkey` (one Parquet file: 3 s instead of 87 s over S3)
 	+ `--output-format cdx` / `--input-format cdx` as another name for `cdxj`; clear error for globs over http(s)
 	+ Parquet output for `cdxt index` and Parquet input for `cdxt repackage` (`cdx_toolkit[parquet]`)
 	+ `cdxt repackage`: default `--prefix REPACKAGE` (was `TEST`), no WARC file is written without captures,

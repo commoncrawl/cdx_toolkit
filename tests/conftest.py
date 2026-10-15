@@ -324,15 +324,17 @@ def local_url_index(tmp_path):
         path = base / f'crawl={crawl}' / 'subset=warc'
         path.mkdir(parents=True)
         con.execute('''CREATE OR REPLACE TABLE idx (
-            url_surtkey VARCHAR, url VARCHAR, url_host_name VARCHAR, url_host_registered_domain VARCHAR,
-            url_host_tld VARCHAR, fetch_time TIMESTAMP, fetch_status SMALLINT, content_mime_type VARCHAR,
-            content_mime_detected VARCHAR, content_digest VARCHAR, content_languages VARCHAR, content_charset VARCHAR,
-            fetch_redirect VARCHAR, warc_filename VARCHAR, warc_record_offset INTEGER, warc_record_length INTEGER)''')
+            url_surtkey VARCHAR, url VARCHAR, url_host_name VARCHAR, url_host_name_reversed VARCHAR,
+            url_host_registered_domain VARCHAR, url_host_tld VARCHAR, fetch_time TIMESTAMP, fetch_status SMALLINT,
+            content_mime_type VARCHAR, content_mime_detected VARCHAR, content_digest VARCHAR, content_languages VARCHAR,
+            content_charset VARCHAR, fetch_redirect VARCHAR, warc_filename VARCHAR, warc_record_offset INTEGER,
+            warc_record_length INTEGER)''')
         for c in crawl_rows:
             host = c['url'].split('/')[2]
-            values = "?, ?, ?, ?, ?, strptime(?, '%Y%m%d%H%M%S'), ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?"
+            values = "?, ?, ?, ?, ?, ?, strptime(?, '%Y%m%d%H%M%S'), ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?"
             con.execute(f'INSERT INTO idx VALUES ({values})', [
-                c['urlkey'], c['url'], host, '.'.join(host.split('.')[-2:]), host.split('.')[-1], c['timestamp'],
+                c['urlkey'], c['url'], host, '.'.join(reversed(host.split('.'))), '.'.join(host.split('.')[-2:]),
+                host.split('.')[-1], c['timestamp'],
                 int(c['status']), c['mime'], c['mime-detected'], c['digest'], c['languages'], c.get('charset'),
                 c['filename'], int(c['offset']), int(c['length']),
             ])

@@ -117,9 +117,9 @@ def test_duckdb_guided_query_prunes_crawls():
     assert plan.n_crawls == 1
     assert "read_parquet(['s3://bucket/index/crawl=CC-MAIN-2024-33/subset=warc/*.parquet']" in sql
     assert 'crawl IN' not in sql  # pruned by the glob
-    assert ("url_host_name = 'www.example.com' OR (url_host_registered_domain IN ('example.org') "
-            "AND (url_surtkey LIKE 'org,example)%' ESCAPE '\\' "
-            "OR url_surtkey LIKE 'org,example,%' ESCAPE '\\'))") in sql
+    assert ("((url_host_name_reversed = 'com.example.www' AND url_host_name = 'www.example.com') "
+            "OR (url_host_name_reversed >= 'org.example' AND url_host_name_reversed < 'org.example/' "
+            "AND (url_host_name_reversed = 'org.example' OR url_host_name_reversed LIKE 'org.example.%')))") in sql
     assert 'url_surtkey, fetch_time, url,' in sql
     assert sql.rstrip().endswith('LIMIT 5')
 
@@ -129,10 +129,15 @@ def test_guided_query_url_patterns():
     sql = AthenaBackend(ATHENA).plan(query).sql
 
     assert "(url_host_tld = 'com' OR url_host_tld = 'net' OR url_host_tld = 'org')" in sql
-    assert ("((url_host_registered_domain IN ('example.com') AND (url_surtkey LIKE 'com,example)%' ESCAPE '\\' "
-            "OR url_surtkey LIKE 'com,example,%' ESCAPE '\\')) OR url_surtkey = 'org,example)/' "
-            "OR url_surtkey LIKE 'com,example)/a\\_b%' ESCAPE '\\' "
-            "OR url_surtkey LIKE 'net,example)%' ESCAPE '\\' OR url_surtkey LIKE 'net,example,%' ESCAPE '\\')") in sql
+    range_com = "url_host_name_reversed >= 'com.example' AND url_host_name_reversed < 'com.example/'"
+    range_org = "url_host_name_reversed >= 'org.example' AND url_host_name_reversed < 'org.example/'"
+    range_net = "url_host_name_reversed >= 'net.example' AND url_host_name_reversed < 'net.example/'"
+    assert (f"(({range_com} AND (url_host_name_reversed = 'com.example' "
+            "OR url_host_name_reversed LIKE 'com.example.%')) "
+            f"OR ({range_org} AND url_surtkey = 'org,example)/') "
+            f"OR ({range_com} AND url_surtkey LIKE 'com,example)/a\\_b%' ESCAPE '\\') "
+            f"OR ({range_net} AND url_surtkey LIKE 'net,example)%' ESCAPE '\\') "
+            f"OR ({range_net} AND url_surtkey LIKE 'net,example,%' ESCAPE '\\'))") in sql
 
 
 def test_guided_query_time_range_and_languages():
@@ -202,7 +207,9 @@ def parquet_index(tmp_path):
             for r in rows if r[0] == crawl
         )
         con.execute(f'''
-            COPY (SELECT *, NULL::VARCHAR AS content_mime_detected, NULL::VARCHAR AS content_digest,
+            COPY (SELECT *,
+                         array_to_string(list_reverse(string_split(url_host_name, '.')), '.') AS url_host_name_reversed,
+                         NULL::VARCHAR AS content_mime_detected, NULL::VARCHAR AS content_digest,
                          NULL::VARCHAR AS content_languages, NULL::VARCHAR AS content_charset,
                          NULL::VARCHAR AS fetch_redirect
                   FROM (VALUES {values}) AS t(url_surtkey, fetch_time, url, content_mime_type,
@@ -272,7 +279,8 @@ def test_index_duckdb_time_range_and_language(tmp_path, capsys):
         for i, (url, t, lang) in enumerate(rows)
     )
     duckdb.connect().execute(f'''
-        COPY (SELECT *, NULL::VARCHAR AS content_mime_type,
+        COPY (SELECT *, array_to_string(list_reverse(string_split(url_host_name, '.')), '.') AS url_host_name_reversed,
+                     NULL::VARCHAR AS content_mime_type,
                      NULL::VARCHAR AS content_mime_detected, NULL::SMALLINT AS fetch_status,
                      NULL::VARCHAR AS content_digest, NULL::VARCHAR AS content_charset, NULL::VARCHAR AS fetch_redirect
               FROM (VALUES {values}) AS t(url, url_surtkey, fetch_time, content_languages, url_host_registered_domain,

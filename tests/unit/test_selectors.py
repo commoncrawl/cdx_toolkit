@@ -40,7 +40,8 @@ def indexes(tmp_path_factory):
         for i, (url, domain) in enumerate(CAPTURES)
     )
     duckdb.connect().execute(f'''
-        COPY (SELECT *, TIMESTAMP '2024-08-01 12:00:00' AS fetch_time, 'a.warc.gz' AS warc_filename,
+        COPY (SELECT *, array_to_string(list_reverse(string_split(url_host_name, '.')), '.') AS url_host_name_reversed,
+                     TIMESTAMP '2024-08-01 12:00:00' AS fetch_time, 'a.warc.gz' AS warc_filename,
                      1 AS warc_record_length, NULL::VARCHAR AS content_mime_type,
                      NULL::VARCHAR AS content_mime_detected, NULL::SMALLINT AS fetch_status,
                      NULL::VARCHAR AS content_digest, NULL::VARCHAR AS content_languages,
