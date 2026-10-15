@@ -180,24 +180,6 @@ def requires_aws_s3(func):
     return pytest.mark.usefixtures('s3_env')(func)
 
 
-def check_aws_athena_query_execution_access():
-    """Check if AWS Athena StartQueryExecution permission is available."""
-    try:
-        # Use IAM simulation instead of actual query execution
-        iam_client = boto3.client('iam')
-        response = iam_client.simulate_principal_policy(
-            PolicySourceArn=f'arn:aws:sts::{boto3.client("sts").get_caller_identity()["Account"]}:assumed-role/your-role/session',  # noqa: E501
-            ActionNames=['athena:StartQueryExecution'],
-            ResourceArns=['*'],
-        )
-
-        # Check if access is allowed
-        return response['EvaluationResults'][0]['EvalDecision'] == 'allowed'
-
-    except (ClientError, NoCredentialsError):
-        return False
-
-
 def check_aws_athena_access():
     """Check if AWS Athena access is available."""
     global _aws_athena_access_cache
@@ -209,13 +191,8 @@ def check_aws_athena_access():
         return _aws_athena_access_cache
 
     try:
-        client = boto3.client('athena')
-
-        # Try list databasets
-        client.list_databases(CatalogName='AwsDataCatalog')
-
-        # Try query access
-        _aws_athena_access_cache = check_aws_athena_query_execution_access()
+        boto3.client('athena').list_databases(CatalogName='AwsDataCatalog')
+        _aws_athena_access_cache = True
     except (NoCredentialsError, ClientError):
         _aws_athena_access_cache = False
 
