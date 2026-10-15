@@ -64,6 +64,12 @@ $ cdxt repackage captures.jsonl --prefix COMMONCRAWL
 $ cdxt index ia --url 'commoncrawl.org/*' --limit 10 | cdxt repackage --wb ia --prefix IA
 ```
 
+Usage guides with examples for different setups:
+
+- [HTTP](docs/usage/http.md): the CDX APIs and Common Crawl's HTTP server, no account needed
+- [AWS: Athena and S3](docs/usage/aws-athena-s3.md): the columnar URL index with Athena or DuckDB, and WARC records from `s3://commoncrawl`
+- [Hugging Face](docs/usage/huggingface.md): the Storage Bucket `hf://buckets/commoncrawl/commoncrawl`, and HF Jobs
+
 ### cdxt index
 
 `cdxt index INDEX` takes one of these indexes. How it is queried is detected from INDEX, or set with
@@ -268,8 +274,7 @@ For large jobs, use `--parallel-readers N` (concurrent reads per process)
 and `--processes N` (e.g. the number of vCPUs). With several processes,
 the captures are split by WARC file across the processes, which write into
 one shared `-001`, `-002`, ... series (which process writes which file
-depends on timing; each file is a complete WARC). See [docs/notes/warc-fetcher-performance.md](docs/notes/warc-fetcher-performance.md)
-for benchmarks and tuning.
+depends on timing; each file is a complete WARC).
 
 Captures without a WARC location, like Internet Archive captures, are
 replayed from the wayback machine given with `--wb` (`ia` is a shortcut for
