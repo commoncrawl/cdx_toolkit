@@ -16,7 +16,7 @@ columnar index (below) or, faster, [AWS](aws-athena-s3.md) or [Hugging Face](hug
 
 ```sh
 pip install cdx_toolkit           # CDX API and HTTP downloads
-pip install cdx_toolkit[duckdb]   # also the columnar index with DuckDB
+pip install 'cdx_toolkit[duckdb]' # also the columnar index with DuckDB
 ```
 
 ## Small scale

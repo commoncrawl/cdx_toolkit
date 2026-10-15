@@ -251,7 +251,7 @@ def import_pyarrow():
         import pyarrow.parquet
     except ImportError:
         raise RuntimeError(
-            'Parquet files need the optional pyarrow dependency. Install cdx_toolkit[parquet].'
+            "Parquet files need the optional pyarrow dependency. Install it with: pip install 'cdx_toolkit[parquet]'"
         ) from None
     return pyarrow
 

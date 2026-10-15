@@ -27,12 +27,12 @@ or clone this repo and use `pip install .`
 Optional extras:
 
 ```
-$ pip install cdx_toolkit[s3]      # S3 input/output and WARC downloads from s3://
-$ pip install cdx_toolkit[duckdb]  # query the columnar URL index with DuckDB
-$ pip install cdx_toolkit[athena]  # query the columnar URL index with AWS Athena
-$ pip install cdx_toolkit[hf]      # Hugging Face Storage Buckets (hf://)
-$ pip install cdx_toolkit[parquet] # Parquet output (and input of cdxt repackage)
-$ pip install cdx_toolkit[all]     # install all optional dependencies
+$ pip install 'cdx_toolkit[s3]'      # S3 input/output and WARC downloads from s3://
+$ pip install 'cdx_toolkit[duckdb]'  # query the columnar URL index with DuckDB
+$ pip install 'cdx_toolkit[athena]'  # query the columnar URL index with AWS Athena
+$ pip install 'cdx_toolkit[hf]'      # Hugging Face Storage Buckets (hf://)
+$ pip install 'cdx_toolkit[parquet]' # Parquet output (and input of cdxt repackage)
+$ pip install 'cdx_toolkit[all]'     # install all optional dependencies
 ```
 
 ### Settings

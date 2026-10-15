@@ -9,7 +9,7 @@ files to a bucket of your own, and run as a [Hugging Face Job](https://huggingfa
 next to the data.
 
 ```sh
-pip install cdx_toolkit[hf,duckdb]
+pip install 'cdx_toolkit[hf,duckdb]'
 hf auth login    # or set HF_TOKEN
 ```
 

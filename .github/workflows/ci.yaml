@@ -67,7 +67,7 @@ jobs:
           pip install setuptools
 
       - name: Install cdx_toolkit
-        run: pip install .[all]
+        run: pip install ".[all]"
 
       - name: Set environment variables for faster unit tests (requests are mocked)
         uses: actions/github-script@v9
@@ -125,7 +125,7 @@ jobs:
           pip install setuptools
 
       - name: Install cdx_toolkit (minimal)
-        run: pip install .[test]
+        run: pip install ".[test]"
 
       - name: Set environment variables for faster unit tests (requests are mocked)
         uses: actions/github-script@v9

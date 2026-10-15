@@ -63,7 +63,7 @@ def iter_duckdb_rows(query: str, region_name: Optional[str] = None) -> Iterator[
     public bucket is readable with valid credentials."""
     if not _HAS_DUCKDB:
         raise RuntimeError(
-            'DuckDB engine requires optional dependencies. Install cdx_toolkit[duckdb].'
+            "DuckDB engine requires optional dependencies. Install them with: pip install 'cdx_toolkit[duckdb]'"
         )
 
     logger.info('Executing DuckDB query: %s', query)

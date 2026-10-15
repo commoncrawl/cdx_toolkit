@@ -9,7 +9,7 @@ selections, especially when `cdxt repackage` runs in `us-east-1` (e.g. on EC2), 
 
 You need:
 
-- `pip install cdx_toolkit[athena,s3]` (and `[duckdb]` for DuckDB);
+- `pip install 'cdx_toolkit[athena,s3]'` (and `[duckdb]` for DuckDB);
 - AWS credentials, found like boto3 finds them (environment, `~/.aws` profiles, SSO, instance roles).
   Reads from `s3://commoncrawl` need credentials of any AWS account; anonymous requests are refused;
 - for Athena: an S3 bucket of your own for the query results (`S3OutputLocation`), and the table of the

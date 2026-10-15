@@ -50,7 +50,7 @@ jobs:
           pip install setuptools
 
       - name: Install cdx_toolkit
-        run: pip install .[all]
+        run: pip install ".[all]"
 
       - name: Configure AWS credentials from OIDC
         uses: aws-actions/configure-aws-credentials@v6

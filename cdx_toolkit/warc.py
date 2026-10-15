@@ -29,7 +29,8 @@ def _is_s3_url(url):
 def _require_s3_deps():
     if not _HAS_FSSPEC:
         raise RuntimeError(
-            'Remote filesystem (S3) support requires optional dependencies. Install cdx_toolkit[s3].'
+            "Remote filesystem (S3) support requires optional dependencies. "
+            "Install them with: pip install 'cdx_toolkit[s3]'"
         )
 
 
