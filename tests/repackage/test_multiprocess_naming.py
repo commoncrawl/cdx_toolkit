@@ -7,18 +7,18 @@ import multiprocessing
 import os
 
 from cdx_toolkit.repackage import multiprocess
-from cdx_toolkit.repackage.multiprocess import _copy_staged_files, _output_filename
+from cdx_toolkit.repackage.multiprocess import _copy_staged_files
+from cdx_toolkit.repackage.writers.series import generate_warc_filename
 
 
-def test_output_filename_local_global_series():
-    # No subprefix -> the clean global series matching single-process naming.
-    assert _output_filename('/out/run', 1) == '/out/run-001.warc.gz'
-    assert _output_filename('/out/run', 12) == '/out/run-012.warc.gz'
-    assert _output_filename('/out/run', 2, subprefix='SUB') == '/out/run-SUB-002.warc.gz'
-
-
-def test_output_filename_s3():
-    assert _output_filename('s3://b/p/run', 3) == 's3://b/p/run-003.warc.gz'
+def test_warc_filenames():
+    # the formatter of the file names, also for the log line of the multi-process mode
+    assert generate_warc_filename('/out/run', 1, gzip=True) == '/out/run-001.warc.gz'
+    assert generate_warc_filename('/out/run', 12, gzip=True) == '/out/run-012.warc.gz'
+    assert generate_warc_filename('/out/run', 1234, gzip=True) == '/out/run-1234.warc.gz'
+    assert generate_warc_filename('/out/run', 2, writer_subprefix='SUB', gzip=True) == '/out/run-SUB-002.warc.gz'
+    assert generate_warc_filename('s3://b/p/run', 3, gzip=True) == 's3://b/p/run-003.warc.gz'
+    assert generate_warc_filename('hf://buckets/a/b/run', 3) == 'hf://buckets/a/b/run-003.warc'
 
 
 def _take_numbers(n):

@@ -42,7 +42,7 @@ from cdx_toolkit.aws import process_pool
 from cdx_toolkit.record_io import RecordWriter, read_records
 from cdx_toolkit.repackage.jobs import RecordsSource, RepackageResult, WaybackJob, WaybackSource
 from cdx_toolkit.repackage.repackager import Repackager
-from cdx_toolkit.repackage.urls import is_s3_url, parse_s3_uri
+from cdx_toolkit.repackage.urls import is_s3_url
 from cdx_toolkit.repackage.writers.series import generate_warc_filename
 
 logger = logging.getLogger(__name__)
@@ -56,16 +56,6 @@ CANCEL_TIMEOUT = 60
 # The shared counter of output file numbers and the cancel event, set in each worker process by _init_worker.
 _FILE_SEQUENCE = None
 _CANCEL = None
-
-
-def _output_filename(prefix_path: str, sequence: int, subprefix: Optional[str] = None,
-                     gzip: bool = True) -> str:
-    """Build a WARC output path for a given rotation sequence (S3 uri or local path)."""
-    if is_s3_url(prefix_path):
-        bucket, key_prefix = parse_s3_uri(prefix_path)
-        key = generate_warc_filename(key_prefix, sequence=sequence, writer_subprefix=subprefix, gzip=gzip)
-        return f's3://{bucket}/{key}'
-    return generate_warc_filename(prefix_path, sequence=sequence, writer_subprefix=subprefix, gzip=gzip)
 
 
 def _init_worker(file_sequence, cancel) -> None:
@@ -242,9 +232,8 @@ def run_multiprocess_repackage(
         if remote_non_s3:
             _copy_staged_files(write_prefix, prefix_path)
 
-        logger.info('Repackage complete -> %d files %s (%.1fs total)',
-                    n_files, _output_filename(prefix_path, sequence=1, subprefix=writer_subprefix),
-                    time.time() - start)
+        first_file = generate_warc_filename(prefix_path, sequence=1, writer_subprefix=writer_subprefix, gzip=True)
+        logger.info('Repackage complete -> %d files %s (%.1fs total)', n_files, first_file, time.time() - start)
         return result
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

@@ -26,12 +26,13 @@ def generate_warc_filename(
     writer_subprefix: Optional[str] = None,
     gzip: bool = False,
 ) -> str:
-    """Generate a WARC file name from a prefix (can be a full path), an optional subprefix
-    (used to distinguish per-process shards), and a sequence index (file-rotation counter)."""
+    """The WARC file name <prefix>[-<subprefix>]-NNN.warc[.gz]: the prefix can be a path or URL (local, s3://,
+    hf://), the subprefix is the user's --subprefix, the sequence is the file number (shared by all processes
+    of a run, at least three digits)."""
     file_name = dest_prefix + '-'
     if writer_subprefix is not None:
         file_name += writer_subprefix + '-'
-    file_name += f'{sequence:03d}.warc'  # TODO default warc command uses ".extracted.warc"
+    file_name += f'{sequence:03d}.warc'
     if gzip:
         file_name += '.gz'
 
@@ -40,7 +41,8 @@ def generate_warc_filename(
 
 def existing_warc_files(prefix_path: str, writer_subprefix: Optional[str] = None, gzip: bool = True) -> List[str]:
     """The files of the series <prefix>[-<subprefix>]-NNN.warc[.gz] (async WARC fetcher) or
-    <prefix>[-<subprefix>]-NNNNNN.extracted.warc[.gz] (--wb) that already exist (local, s3://, hf://, ...)."""
+    <prefix>[-<subprefix>]-NNNNNN.extracted.warc[.gz] (written by --wb in older versions) that already exist
+    (local, s3://, hf://, ...)."""
     fs, fs_prefix = fsspec.url_to_fs(prefix_path)
     name = re.escape(posixpath.basename(fs_prefix)) + '-'
     if writer_subprefix is not None:
