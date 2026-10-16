@@ -2,7 +2,7 @@
 
 The `cdxt` command line tool has a new design with two commands:
 
-- **`cdxt index`** selects captures from an index and writes them as JSONL, CDXJ, CSV or TSV
+- **`cdxt index`** selects captures from an index and writes them as JSONL, CDXJ, CSV, TSV or Parquet
   (replaces `cdxt iter` and `cdxt size`).
 - **`cdxt repackage`** fetches the captures listed in an index file and writes them into WARC files
   (replaces `cdxt warc`, together with `cdxt index`).
@@ -45,8 +45,8 @@ The old `warc` command now runs like `cdxt index ... | cdxt repackage --no-sort`
 | `cdxt --source CDX_API_URL iter URL` | `cdxt index CDX_API_URL --url URL` |
 | `cdxt --crawl 3 iter URL` | `cdxt index cc --crawl 3 --url URL` |
 | `cdxt --cc size URL` | `cdxt index cc --url URL --count` |
-| `cdxt --cc warc URL` | `cdxt index cc --url URL \| cdxt repackage` |
-| `cdxt --ia warc URL` | `cdxt index ia --url URL \| cdxt repackage --wb ia` |
+| `cdxt --cc warc URL` | `cdxt index cc --url URL \| cdxt repackage --prefix TEST` |
+| `cdxt --ia warc URL` | `cdxt index ia --url URL \| cdxt repackage --prefix TEST --wb ia` |
 
 ## What changed
 
@@ -75,7 +75,8 @@ cdxt index cc --url 'commoncrawl.org/*' --limit 10 --from 2017 --output-format c
 | `--source https://web.archive.org/cdx/search/cdx` | `cdxt index https://web.archive.org/cdx/search/cdx` |
 | `--crawl ...` (implied `--cc`) | `cdxt index cc --crawl ...` |
 
-`--crawl` now has to be combined with `cc` explicitly; it cannot be used with other indexes.
+`--crawl` now has to be combined with `cc` explicitly (or a columnar index such as `cc-url-index-s3`); it
+cannot be used with `ia` or other CDX API servers.
 
 ### The URL is an option
 
@@ -102,12 +103,12 @@ cdxt index cc --domain commoncrawl.org --url 'example.com/about*' --limit 100
 | `iter` (text: `status 200, timestamp ..., url ...`) | JSONL by default |
 | `iter --jsonl` | default, or `--output-format jsonl` |
 | `iter --csv` | `--output-format csv`, or `-o captures.csv` |
-| — | `--output-format cdxj` / `tsv`, or `-o captures.cdxj` / `captures.tsv` |
+| — | `--output-format cdxj` / `tsv` / `parquet`, or `-o captures.cdxj` / `captures.tsv` / `captures.parquet` |
 | `--fields url,status,timestamp` (default) | `--fields url,status,timestamp` (default: all fields) |
 | `--all-fields` | default |
 
 The output format is detected from the `--output` file extension (`.jsonl`, `.json`, `.cdxj`,
-`.cdx`, `.csv`, `.tsv`, each optionally with `.gz`). For other extensions, set `--output-format`.
+`.cdx`, `.csv`, `.tsv`, each optionally with `.gz`, or `.parquet`, which needs `cdx_toolkit[parquet]`). For other extensions, set `--output-format`.
 
 The old human-readable text output is gone. The closest replacement is CSV with the old default fields:
 
@@ -171,7 +172,7 @@ The `warc` options are split between the two commands:
 
 **Common Crawl** captures contain their WARC location (`filename`, `offset`, `length`) and are
 fetched from `--warc-download-prefix` (default `https://data.commoncrawl.org`; use
-`s3://commoncrawl` in AWS us-east-1). Two things differ from the old `warc` command:
+`s3://commoncrawl` in AWS us-east-1). Three things differ from the old `warc` command:
 
 - **File names:** `<prefix>[-<subprefix>]-001.warc.gz`, `-002`, ... instead of
   `<prefix>[-<subprefix>]-000000.extracted.warc.gz`, `-000001`, ...

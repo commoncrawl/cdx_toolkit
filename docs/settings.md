@@ -11,7 +11,7 @@ Requests over HTTP(S) go through `cdx_toolkit/myrequests.py`:
   default `--warc-download-prefix`, and `capture.content` in Python);
 - wayback replays, e.g. from `https://web.archive.org/web` (`cdxt repackage --wb ia`).
 
-Reads from `s3://` (see above), `hf://`, and the queries of DuckDB and Athena do not use it.
+Reads from `s3://` (see [S3 settings](#s3-settings)), `hf://`, and the queries of DuckDB and Athena do not use it.
 
 ### Minimum interval between requests
 
