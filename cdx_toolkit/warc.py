@@ -208,7 +208,7 @@ class CDXToolkitWARCWriter:
     def __init__(self, prefix, subprefix, info, size=1000000000, gzip=True, warc_version=None):
         warnings.warn(
             'cdx_toolkit.warc.get_writer() and CDXToolkitWARCWriter are deprecated and will be removed in '
-            'cdx_toolkit 1.0; use cdx_toolkit.repackage.repackage()',
+            'a future version; use cdx_toolkit.repackage.repackage()',
             FutureWarning,
             stacklevel=2,
         )

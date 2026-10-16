@@ -320,4 +320,4 @@ repackage(index.records(query), prefix='COMMONCRAWL')        # | cdxt repackage 
 ```
 
 `cdx_toolkit.warc.get_writer()` (`CDXToolkitWARCWriter`) is deprecated and will be removed in
-cdx_toolkit 1.0; `repackage()` replaces it.
+a future version; `repackage()` replaces it.
