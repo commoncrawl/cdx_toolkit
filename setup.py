@@ -56,7 +56,7 @@ setup(
     long_description_content_type='text/markdown',
     author='Greg Lindahl and others',
     author_email='lindahl@pbm.com',
-    url='https://github.com/cocrawler/cdx_toolkit',
+    url='https://github.com/commoncrawl/cdx_toolkit',
     packages=packages,
     python_requires=">=3.9",
     extras_require=extras_require,

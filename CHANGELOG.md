@@ -50,6 +50,15 @@
 	+ new extras: `athena`, `duckdb`, `hf` (`huggingface_hub>=1.7.2`, the first version whose `HfFileSystem` handles
 	  Storage Buckets), `parquet`; `fsspec` and `aiofiles` are now required
 
+- 0.9.39
+	+ `CDXToolkitWARCWriter` (`cdx_toolkit.warc.get_writer()`) supports the context manager protocol (`with ... as writer:`),
+	  so the WARC file is closed, and an S3 upload committed, also on errors; `close()` still works (#70)
+	+ WARC files can be written to S3 (and other fsspec file systems); `cdx_toolkit[s3]` extra (#67)
+	+ settings are read from `CDXT_*` environment variables (`settings.py`), common CLI code moved to `utils.py`,
+	  the CLI and the example close the WARC writer (#67)
+	+ weekly GitHub Action that checks Common Crawl's CDX index server (#60)
+	+ PyPI releases with a manually dispatched trusted-publisher workflow (#69)
+
 - 0.9.38
 	+ deprecated support for py3.7 and py.3.8
 	+ added support for py3.13 and py3.14
