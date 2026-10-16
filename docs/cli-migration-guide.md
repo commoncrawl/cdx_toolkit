@@ -7,29 +7,34 @@ The `cdxt` command line tool has a new design with two commands:
 - **`cdxt repackage`** fetches the captures listed in an index file and writes them into WARC files
   (replaces `cdxt warc`, together with `cdxt index`).
 
-`cdxt iter` is now a deprecated alias of `cdxt index`: it takes exactly the same (new) arguments,
-works the same and prints a deprecation warning. The old `iter` command lines (options before the
-command, the URL as a positional argument) no longer work, rewrite them as shown below.
+The command lines of cdx_toolkit 0.9.39 and earlier (options before the command, the URL as a
+positional argument, the `iter`, `size` and `warc` commands) still work, but they are deprecated and
+will be removed in cdx_toolkit 1.0. They run with the new code and print a suggested new command line
+on stderr:
 
 ```
-$ cdxt iter cc --url 'commoncrawl.org/*' --limit 10
-cdxt: "iter" is deprecated and will be removed in a future version, use "cdxt index" (same arguments). ...
-{"digest": ..., "url": "https://commoncrawl.org/", ...}
+$ cdxt --cc --limit 10 iter 'commoncrawl.org/*'
+cdxt: this command line uses the old syntax, which is deprecated and will be removed in cdx_toolkit 1.0; suggested replacement: cdxt index cc --url 'commoncrawl.org/*' --limit 10 --output-format csv --fields status,timestamp,url (see https://github.com/commoncrawl/cdx_toolkit#command-line-tools)
+status 200, timestamp 20250804103329, url https://www.commoncrawl.org/
+...
 ```
 
-The `size` and `warc` commands have been removed. If you run one of them, `cdxt` exits with an
-error and prints the equivalent new command:
+The output of the old `iter` (text, `--jsonl`, `--csv`, the default fields `url,status,timestamp`),
+`--get` and `size --details` are kept. The suggested replacement is not always exact: the new
+commands have no text output (CSV is suggested instead), `--closest` always makes a single query, and
+`cdxt index --count` is at most `--limit` and has no `--details`.
 
-```
-$ cdxt --cc --limit 10 warc 'commoncrawl.org/*'
-cdxt: the "warc" command has been removed, use "cdxt index | cdxt repackage" instead.
+The old `warc` command now runs like `cdxt index ... | cdxt repackage --no-sort`, which changes:
 
-The equivalent command is:
+- the WARC files are named `TEST-001.warc.gz`, `TEST-002.warc.gz`, ... (with `--prefix`/`--subprefix`:
+  `PREFIX-SUBPREFIX-001.warc.gz`) instead of `TEST-000000.extracted.warc.gz`; WARC files with the same
+  prefix must not exist yet
+- the WARC records are copied byte-for-byte, without the added `WARC-Source-URI` and
+  `WARC-Source-Range` headers
+- no WARC file is written without captures
+- the exit status is 1 if captures could not be fetched (the others are written)
 
-  cdxt index cc --url 'commoncrawl.org/*' --limit 10 | cdxt repackage
-
-See "cdxt index --help", "cdxt repackage --help" or https://github.com/commoncrawl/cdx_toolkit#command-line-tools
-```
+`cdxt --cc iter --all-fields --csv` is a usage error (it failed with a traceback before).
 
 ## Quick reference
 
@@ -130,7 +135,8 @@ cdxt --cc size 'commoncrawl.org/*'
 cdxt index cc --url 'commoncrawl.org/*' --count
 ```
 
-`size --details` (one line per index) has been removed. Use `-v` to see which indexes are queried.
+`index --count` has no `--details` (one line per index), and is at most `--limit`. Use `-v` to see which
+indexes are queried; the deprecated `cdxt --cc size --details URL` still prints the lines.
 
 ### `warc` is now `index` + `repackage`
 
