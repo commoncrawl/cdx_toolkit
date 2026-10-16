@@ -318,8 +318,8 @@ upload (an S3 lifecycle rule for incomplete uploads removes it).
 ### Migrating from the old commands
 
 The command lines of cdx_toolkit 0.9.39 (`cdxt --cc iter ...`, `size`,
-`warc`) still work, but are deprecated and will be removed in cdx_toolkit 1.0;
-they print a suggested new command line. The old `warc` now writes
+`warc`) still work, but are deprecated and will be removed in a future
+version; they print a suggested new command line. The old `warc` now writes
 `TEST-001.warc.gz` and exits with status 1 if captures could not be fetched.
 See the [migration guide](docs/cli-migration-guide.md) for all changes and
 more examples.

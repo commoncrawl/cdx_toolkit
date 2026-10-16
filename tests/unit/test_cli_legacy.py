@@ -117,7 +117,7 @@ def test_iter_text_output(capsys):
     assert (query.urls, query.crawl, query.limit, query.from_ts, query.filters) == (
         ['example.com/*'], 'CC-MAIN-2024-33', 2, '2024', ['=status:200'])
     assert err.count('\n') == 1
-    assert 'the old syntax, which is deprecated and will be removed in cdx_toolkit 1.0' in err
+    assert 'the old syntax, which is deprecated and will be removed in a future version' in err
     assert ("suggested replacement: cdxt index cc --url 'example.com/*' --crawl CC-MAIN-2024-33 --limit 2 "
             '--from 2024 --filter =status:200 --output-format csv --fields status,timestamp,url') in err
 

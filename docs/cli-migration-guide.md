@@ -9,12 +9,12 @@ The `cdxt` command line tool has a new design with two commands:
 
 The command lines of cdx_toolkit 0.9.39 and earlier (options before the command, the URL as a
 positional argument, the `iter`, `size` and `warc` commands) still work, but they are deprecated and
-will be removed in cdx_toolkit 1.0. They run with the new code and print a suggested new command line
+will be removed in a future version. They run with the new code and print a suggested new command line
 on stderr:
 
 ```
 $ cdxt --cc --limit 10 iter 'commoncrawl.org/*'
-cdxt: this command line uses the old syntax, which is deprecated and will be removed in cdx_toolkit 1.0; suggested replacement: cdxt index cc --url 'commoncrawl.org/*' --limit 10 --output-format csv --fields status,timestamp,url (see https://github.com/commoncrawl/cdx_toolkit#command-line-tools)
+cdxt: this command line uses the old syntax, which is deprecated and will be removed in a future version; suggested replacement: cdxt index cc --url 'commoncrawl.org/*' --limit 10 --output-format csv --fields status,timestamp,url (see https://github.com/commoncrawl/cdx_toolkit#command-line-tools)
 status 200, timestamp 20250804103329, url https://www.commoncrawl.org/
 ...
 ```

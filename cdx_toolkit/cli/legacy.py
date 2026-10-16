@@ -197,10 +197,13 @@ def legacy_captures(ns: Namespace, source: str, use_get: bool) -> Iterable[Mappi
 
 
 def iter_fields(ns: Namespace) -> List[str]:
+    """The fields of `iter --fields` (default url,status,timestamp): without duplicates, sorted."""
     return sorted(set(ns.fields.split(',')))
 
 
 def run_iter(ns: Namespace, cmdline: str):
+    """`cdxt ... iter URL`: print the captures as in 0.9.39, as text (`key value, ...`), JSON lines (--jsonl) or
+    CSV (--csv), with the --fields (sorted), or all fields with --all-fields."""
     if ns.all_fields and ns.csv:
         # 0.9.39 wrote the header of --fields, then failed with a traceback at the first capture
         raise UsageError('--all-fields cannot be used with --csv, select the columns with --fields')
@@ -226,6 +229,8 @@ def run_iter(ns: Namespace, cmdline: str):
 
 
 def run_size(ns: Namespace, cmdline: str):
+    """`cdxt ... size URL`: print the estimated number of captures (CDXFetcher.get_size_estimate(), not capped by
+    --limit), with --details first the estimate of each index."""
     kwargs = request_kwargs(ns)
     if ns.details:
         kwargs['details'] = True  # get_size_estimate() prints the estimate of each index
@@ -251,6 +256,8 @@ def warc_content_source(ns: Namespace, source: str) -> dict:
 
 
 def run_warc(ns: Namespace, cmdline: str):
+    """`cdxt ... warc URL`: write the captures to <prefix>[-<subprefix>]-001.warc.gz, ... with repackage(), streamed
+    in index order; IncompleteError (exit status 1) if captures could not be fetched."""
     from cdx_toolkit.repackage import repackage
 
     source = legacy_source(ns)
@@ -330,11 +337,13 @@ def suggested_replacement(ns: Namespace) -> str:
 
 
 def render(tokens: List[str]) -> str:
+    """A command line from its tokens, quoted for the shell."""
     return ' '.join(shlex.quote(token) for token in tokens)
 
 
 def deprecation_message(ns: Namespace) -> str:
+    """The line printed on stderr for an old command line, with the suggested new command line."""
     return (
-        'cdxt: this command line uses the old syntax, which is deprecated and will be removed in cdx_toolkit 1.0; '
+        'cdxt: this command line uses the old syntax, which is deprecated and will be removed in a future version; '
         f'suggested replacement: {suggested_replacement(ns)} (see {DOCS_URL})\n'
     )
