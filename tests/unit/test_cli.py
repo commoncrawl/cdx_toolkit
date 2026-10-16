@@ -11,7 +11,6 @@ import cdx_toolkit.repackage.warc_records
 import cdx_toolkit.warc
 from cdx_toolkit.cli import main
 from cdx_toolkit.cli.common import parse_size
-from cdx_toolkit.cli.deprecated import get_command, rewrite_deprecated_command, translate
 from cdx_toolkit.repackage.jobs import RepackageResult
 import cdx_toolkit.cli.index
 
@@ -253,51 +252,6 @@ def test_parse_size(value, expected):
 def test_parse_size_invalid(value):
     with pytest.raises(ArgumentTypeError):
         parse_size(value)
-
-
-@pytest.mark.parametrize(
-    'args, command',
-    [
-        ('--cc --limit 10 iter example.com', 'iter'),
-        ('--source https://example.com/cdx --crawl 3 size example.com', 'size'),
-        ('-v index cc --url example.com', 'index'),
-        ('--version', None),
-    ],
-)
-def test_get_command(args, command):
-    assert get_command(args.split()) == command
-
-
-@pytest.mark.parametrize(
-    'args, expected',
-    [
-        ('iter cc --url example.com/*', ['index', 'cc', '--url', 'example.com/*']),
-        ('-v iter --help', ['-v', 'index', '--help']),
-        # the old syntax is not translated, the arguments are the same as for `index`
-        ('--cc --limit 10 iter example.com/*', ['--cc', '--limit', '10', 'index', 'example.com/*']),
-    ],
-)
-def test_iter_is_an_alias_of_index(capsys, args, expected):
-    assert rewrite_deprecated_command(args.split()) == expected
-    assert '"iter" is deprecated' in capsys.readouterr().err
-
-
-def test_iter_runs_like_index(capsys):
-    with patch.object(cdx_toolkit.cli.index, 'run') as run:
-        main(['iter', 'cc', '--url', 'example.com/*', '--limit', '3', '-o', 'out.csv'])
-
-    args = run.call_args.args[0]
-    assert (args.cmd, args.index, args.urls) == ('index', 'cc', ['example.com/*'])
-    assert (args.limit, args.output) == (3, 'out.csv')
-    assert '"iter" is deprecated' in capsys.readouterr().err
-
-
-def test_translate_warc():
-    args = '--source https://example.com/cdx --wb https://example.com/wb --limit=5 warc --size 1000 example.com/*'
-    assert translate(args.split()) == (
-        "cdxt index https://example.com/cdx --url 'example.com/*' --limit 5"
-        " | cdxt repackage --wb https://example.com/wb --size 1000"
-    )
 
 
 def test_verbose_before_and_after_subcommand(tmp_path):

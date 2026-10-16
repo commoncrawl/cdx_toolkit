@@ -8,8 +8,7 @@ from cdx_toolkit.utils import get_version
 
 from . import index, repackage
 from .common import IncompleteError, add_verbose_arg, set_loglevel
-from .deprecated import DEPRECATED_COMMANDS, REMOVED_COMMANDS, exit_removed_command, get_command
-from .deprecated import rewrite_deprecated_command
+from .legacy import build_legacy_parser, deprecation_message, is_legacy_command_line
 
 
 def build_parser() -> ArgumentParser:
@@ -28,15 +27,13 @@ def main(args=None):
     if args is None:  # pragma: no cover
         args = sys.argv[1:]
 
-    command = get_command(args)
-    if command in REMOVED_COMMANDS:
-        exit_removed_command(command, args)
-    if command in DEPRECATED_COMMANDS:
-        args = rewrite_deprecated_command(args)
-
-    parser = build_parser()
+    # the command lines of cdx_toolkit 0.9.39 (deprecated): `cdxt --cc iter URL`, `size`, `warc`
+    legacy = is_legacy_command_line(args)
+    parser = build_legacy_parser() if legacy else build_parser()
     cmd = parser.parse_args(args=args)
     set_loglevel(cmd.verbose)
+    if legacy:
+        sys.stderr.write(deprecation_message(cmd))
     configure_fsspec_s3()  # Common Crawl's S3 defaults for s3:// paths, unless configured by the user
     cmdline = ' '.join(['cdxt'] + list(args))
     if uses_hf(args):
