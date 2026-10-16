@@ -1,7 +1,10 @@
 - unreleased
 	+ new command line interface: `cdxt index` and `cdxt repackage` (see README)
-	+ `cdxt iter` is a deprecated alias of `cdxt index` (same arguments, prints a deprecation warning)
-	+ removed `cdxt size` and `cdxt warc`; they print the equivalent new command
+	+ the command lines of 0.9.39 (`cdxt --cc iter URL`, `size`, `warc`) are deprecated (to be removed in a future version): they run
+	  with the new code and print a suggested new command line; `iter` output, `--get` and `size --details` are kept;
+	  `warc` writes `TEST-001.warc.gz` (was `TEST-000000.extracted.warc.gz`) with the records copied byte-for-byte
+	  (no `WARC-Source-URI`/`WARC-Source-Range` headers), no file without captures, and exits with status 1 if
+	  captures could not be fetched; `iter --all-fields --csv` is a usage error (was a traceback)
 	+ `cdxt index`: `--hostname`, `--domain`, repeatable `--url`, `-o/--output` (local or remote),
 	  JSONL/CDXJ/CSV/TSV output, all fields by default, `--count` replaces `size`
 	+ `cdxt repackage`: reads captures from a file or stdin, human-readable `--size`, `--is-part-of`, `--description`

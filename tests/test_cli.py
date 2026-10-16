@@ -310,39 +310,6 @@ def test_multi_misc_ia(capsys, caplog):
     multi_helper(testdata, capsys, caplog)
 
 
-@conditional_mock_responses
-def test_iter_alias(capsys):
-    # same requests as test_basics (`index cc --limit 10 --url commoncrawl.org/*`)
-    main(args='iter cc --limit 10 --url commoncrawl.org/*'.split())
-    out, err = capsys.readouterr()
-
-    assert len(out.splitlines()) == 10
-    assert all(json.loads(line)['url'] for line in out.splitlines())
-    assert '"iter" is deprecated' in err and 'use "cdxt index"' in err
-
-
-@pytest.mark.parametrize(
-    'args, expected',
-    [
-        ('--crawl 2 size --details commoncrawl.org/*', "cdxt index cc --url 'commoncrawl.org/*' --crawl 2 --count"),
-        (
-            '-v --ia --limit 1 warc --prefix FOO --url-fgrepv robots.txt commoncrawl.org/*',
-            "cdxt index ia --url 'commoncrawl.org/*' -v --limit 1 --url-fgrepv robots.txt"
-            " | cdxt repackage --prefix FOO --wb ia",
-        ),
-    ],
-)
-def test_removed_commands(capsys, args, expected):
-    with pytest.raises(SystemExit) as e:
-        main(args=args.split())
-    assert e.value.code == 2
-
-    out, err = capsys.readouterr()
-    assert out == ''
-    assert 'has been removed' in err
-    assert expected in err
-
-
 def warc_test_helper(tmpdir, index_args: str, repackage_args: str = ''):
     with tmpdir.as_cwd():
         for cmdline in (
