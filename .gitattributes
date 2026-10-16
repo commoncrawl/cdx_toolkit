@@ -1,0 +1,2 @@
+# test fixtures are compared byte for byte (e.g. WARC payload digests): no line-ending conversion
+tests/data/** -text

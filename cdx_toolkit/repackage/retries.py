@@ -1,0 +1,62 @@
+import asyncio
+import logging
+from typing import Tuple
+from os import urandom
+
+try:
+    from botocore.exceptions import ClientError, EndpointConnectionError, HTTPClientError, IncompleteReadError
+except ImportError:  # pragma: no cover - S3 support is optional (cdx_toolkit[s3])
+    class ClientError(Exception):
+        pass
+
+    class EndpointConnectionError(Exception):
+        pass
+
+    HTTPClientError = IncompleteReadError = EndpointConnectionError
+
+try:
+    from aiohttp import ClientError as AiohttpClientError  # aiobotocore's transport
+except ImportError:  # pragma: no cover
+    AiohttpClientError = EndpointConnectionError
+
+# errors of a request or of reading its response that may be transient: timeouts, closed connections, interrupted
+# or incomplete responses, S3 errors (e.g. 503 SlowDown; botocore retries those itself, too)
+RETRYABLE_ERRORS = (
+    TimeoutError, asyncio.TimeoutError, ConnectionError, ClientError, EndpointConnectionError, HTTPClientError,
+    IncompleteReadError, AiohttpClientError,
+)
+
+
+logger = logging.getLogger(__name__)
+
+
+async def with_retries(coro_factory, *, op_name: str, max_attempts: int, base_backoff_seconds: float,
+                       retry_on: Tuple[type, ...] = RETRYABLE_ERRORS):
+    """Perform operation with retries and backoff."""
+    last_exc = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await coro_factory()
+        except retry_on as exc:
+            last_exc = exc
+            if attempt >= max_attempts:
+                logger.error('%s failed after %d attempts: %r', op_name, attempt, exc)
+                break
+            sleep_s = _backoff(attempt, base_backoff_seconds)
+            logger.warning(
+                '%s failed (attempt %d/%d) - retrying in %.2fs',
+                op_name,
+                attempt,
+                max_attempts,
+                sleep_s,
+            )
+            await asyncio.sleep(sleep_s)
+    raise last_exc
+
+
+def _backoff(attempt: int, base_backoff_seconds: float) -> float:
+    """Time to sleep based on number of attempts"""
+    base = base_backoff_seconds * (2 ** (attempt - 1))
+
+    # Add random jitter between 80-120% of base delay
+    return max(0.05, base * (0.8 + 0.4 * urandom(1)[0] / 255))

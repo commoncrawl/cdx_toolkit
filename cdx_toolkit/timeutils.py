@@ -1,3 +1,4 @@
+import calendar
 import datetime
 from email.utils import parsedate
 import logging
@@ -12,9 +13,6 @@ TIMESTAMP = '%Y%m%d%H%M%S'
 TIMESTAMP_LOW = '19780101000000'
 TIMESTAMP_HIGH = '29991231235959'
 
-# if you ask for Feb we'll pad it to the 28th even if it's a leap year
-days_in_month = (0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
-
 
 def pad_timestamp(ts):
     '''
@@ -28,11 +26,34 @@ def pad_timestamp_up(ts):
     '''
     >>> pad_timestamp_up('199802')
     '19980228235959'
+    >>> pad_timestamp_up('200002')
+    '20000229235959'
+    >>> pad_timestamp_up('20260410')
+    '20260410235959'
     '''
-    ts = ts + TIMESTAMP_HIGH[len(ts):]
-    month = ts[4:6]
-    ts = ts[:6] + str(days_in_month[int(month)]) + ts[8:]
-    return ts
+    padded = ts + TIMESTAMP_HIGH[len(ts):]
+    if len(ts) < 8:  # no day given: the last day of the month
+        last_day = calendar.monthrange(int(padded[:4]), int(padded[4:6]))[1]
+        padded = padded[:6] + f'{last_day:02d}' + padded[8:]
+    return padded
+
+
+def timestamp_range(ts):
+    """The first and the last second of a CDX timestamp prefix (4 to 14 digits of yyyyMMddhhmmss, padded like the
+    CDX API pads it) as datetimes; ValueError for an invalid one (e.g. month 13 or February 30th).
+
+    >>> timestamp_range('202402')
+    (datetime.datetime(2024, 2, 1, 0, 0), datetime.datetime(2024, 2, 29, 23, 59, 59))
+    """
+    if not (isinstance(ts, str) and ts.isascii() and ts.isdigit() and 4 <= len(ts) <= 14):
+        raise ValueError(f'invalid timestamp {ts!r}, use e.g. 2008, 200803, 20080328 or 200906302359')
+    try:
+        return tuple(
+            datetime.datetime(*(int(padded[i:j]) for i, j in ((0, 4), (4, 6), (6, 8), (8, 10), (10, 12), (12, 14))))
+            for padded in (pad_timestamp(ts), pad_timestamp_up(ts))
+        )
+    except ValueError:  # also calendar.IllegalMonthError
+        raise ValueError(f'invalid timestamp {ts!r} (no such date or time)') from None
 
 
 def timestamp_to_time(ts):

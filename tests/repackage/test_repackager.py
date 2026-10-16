@@ -1,0 +1,725 @@
+"""The Repackager pipeline end to end without network: fake HTTP and HF reads, in-process "processes"."""
+import asyncio
+import contextlib
+import glob
+import io
+import gzip
+import itertools
+import logging
+import os
+import sys
+import threading
+import time
+from unittest.mock import Mock, patch
+
+import fsspec
+import pytest
+import requests
+from warcio.archiveiterator import ArchiveIterator
+
+from cdx_toolkit import myrequests
+from cdx_toolkit.repackage import multiprocess
+from cdx_toolkit.repackage.jobs import RangeJob, RepackageResult
+from cdx_toolkit.repackage.readers.http import HttpRangeReader, RangeError
+from cdx_toolkit.repackage.readers.s3 import S3RangeReader
+from cdx_toolkit.repackage.writers.local import LocalOutputFile
+from cdx_toolkit.repackage.jobs import RecordsSource, WaybackSource
+from cdx_toolkit.repackage.repackager import Repackager, ThroughputTracker
+from tests.conftest import InlineExecutor
+from tests.fake_warc_server import FakeWarcServer
+from tests.conftest import requires_aioboto3
+
+
+def make_server():
+    """Four captures in two WARC files."""
+    server = FakeWarcServer('https://data.example.org')
+    captures = []
+    for i in range(4):
+        captures += server.add_captures(f'crawl-data/{i % 2}.warc.gz', [f'https://example.com/{i}'])
+    return server, captures
+
+
+SERVER, CAPTURES = make_server()
+fake_get = SERVER.get
+
+
+def response_records(paths):
+    records = []
+    for path in sorted(paths):
+        with fsspec.open(path, 'rb') as f:
+            records += [r for r in ArchiveIterator(f) if r.rec_type == 'resource']
+    return records
+
+
+def test_failed_captures_are_counted_and_the_others_written(tmp_path):
+    calls = []
+
+    def flaky_get(url, headers=None, **kwargs):
+        calls.append(url)
+        if len(calls) == 1:
+            raise ConnectionError('network down')
+        return fake_get(url, headers)
+
+    repackager = Repackager(
+        source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'), writer_info={},
+    )
+    with patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=flaky_get):
+        assert repackager.run() == RepackageResult(requested=4, written=3, failed=1)
+    assert len(response_records(glob.glob(str(tmp_path / 'out-*.warc.gz')))) == 3
+
+
+@pytest.mark.parametrize('response', [
+    Mock(status_code=200, headers={}, content=b'x' * 100),  # range ignored
+    Mock(status_code=301, headers={'Location': 'https://elsewhere.example.org/'}, content=b''),  # redirect
+    Mock(status_code=206, headers={'Content-Range': 'bytes 0-0/100'}, content=b'x'),  # truncated / wrong range
+    'wrong-range',
+])
+def test_invalid_range_responses_are_not_written(tmp_path, response):
+    capture = CAPTURES[1]  # offset > 0
+    offset, length = int(capture['offset']), int(capture['length'])
+    if response == 'wrong-range':
+        response = Mock(status_code=206, headers={'Content-Range': f'bytes {offset + 1}-{offset + length}/9999'},
+                        content=b'x' * length)
+    repackager = Repackager(
+        source=RecordsSource([capture], 'https://data.example.org'), prefix_path=str(tmp_path / 'out'), writer_info={},
+    )
+    with patch('cdx_toolkit.repackage.readers.http.myrequests_get', return_value=response):
+        assert repackager.run() == RepackageResult(requested=1, written=0, failed=1)
+    assert glob.glob(str(tmp_path / 'out-*')) == []
+
+
+def test_a_slow_http_read_does_not_block_the_other_readers_and_the_writer(tmp_path):
+    """The first read is held until the second capture has been written."""
+    second_written = threading.Event()
+    original_write = LocalOutputFile.write
+
+    def get(url, headers=None, **kwargs):
+        if url.endswith(CAPTURES[0]['filename']):
+            assert second_written.wait(timeout=5), 'the second capture was not written while the first was read'
+        return fake_get(url, headers)
+
+    async def write(self, data):
+        await original_write(self, data)
+        if b'https://example.com/1' in gzip.decompress(data):
+            second_written.set()
+
+    repackager = Repackager(
+        source=RecordsSource(CAPTURES[:2], 'https://data.example.org', sort=False), prefix_path=str(tmp_path / 'out'),
+        writer_info={}, n_parallel_readers=2,
+    )
+    with patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=get), \
+            patch.object(LocalOutputFile, 'write', write):
+        assert repackager.run() == RepackageResult(requested=2, written=2)
+    records = response_records(glob.glob(str(tmp_path / 'out-*.warc.gz')))
+    assert [r.rec_headers.get_header('WARC-Target-URI') for r in records] == [CAPTURES[1]['url'], CAPTURES[0]['url']]
+
+
+def test_writer_error_stops_the_pipeline_and_removes_the_file(tmp_path):
+    repackager = Repackager(
+        source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'), writer_info={},
+        max_file_size=1,
+    )
+    writes = []
+
+    original_write = LocalOutputFile.write
+
+    async def failing_write(self, data):
+        writes.append(data)
+        if len(writes) == 4:  # warcinfo + record of the first file, warcinfo + record of the second
+            raise OSError('disk full')
+        await original_write(self, data)
+
+    with patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get), \
+            patch.object(LocalOutputFile, 'write', failing_write), pytest.raises(OSError, match='disk full'):
+        repackager.run()
+    # the first file is complete, the second was removed
+    assert [os.path.basename(p) for p in glob.glob(str(tmp_path / 'out-*'))] == ['out-001.warc.gz']
+
+
+@pytest.mark.parametrize('failing_close, expected_files', [
+    (1, []),  # rotation: the file being closed is removed, no next file is started
+    (2, ['out-001.warc.gz']),  # the final close: the last file is removed, the complete first one stays
+])
+def test_close_error_stops_the_pipeline_and_removes_the_file(tmp_path, failing_close, expected_files):
+    repackager = Repackager(
+        source=RecordsSource(CAPTURES[:2], 'https://data.example.org'), prefix_path=str(tmp_path / 'out'),
+        writer_info={}, max_file_size=1,
+    )
+    flushes = []
+    original_flush = LocalOutputFile._flush
+
+    async def failing_flush(self):
+        flushes.append(self.file_path)
+        if len(flushes) == failing_close:
+            raise OSError('disk full')
+        await original_flush(self)
+
+    with patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get), \
+            patch.object(LocalOutputFile, '_flush', failing_flush), pytest.raises(OSError, match='disk full'):
+        repackager.run()
+    assert [os.path.basename(p) for p in glob.glob(str(tmp_path / 'out-*'))] == expected_files
+
+
+def test_rotation_by_size(tmp_path):
+    repackager = Repackager(
+        source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'), writer_info={},
+        max_file_size=1,
+    )
+    with patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get):
+        assert repackager.run().written == 4
+    paths = sorted(glob.glob(str(tmp_path / 'out-*.warc.gz')))
+    assert [os.path.basename(p) for p in paths] == [f'out-00{i}.warc.gz' for i in range(1, 5)]
+    assert all(len(response_records([p])) == 1 for p in paths)
+
+
+def test_cancellation_with_a_full_queue_and_a_blocked_reader(tmp_path):
+    """Cancelling must not wait for queue space: the producer thread stops and the current file is removed."""
+    source_done = threading.Event()
+
+    class EndlessSource:
+        def iter_range_jobs(self):
+            try:
+                for i in itertools.count():
+                    yield RangeJob(url=f'https://data.example.org/{i}', offset=0, length=1)
+            finally:
+                source_done.set()
+
+    reads = []
+
+    async def blocking_read(self, job):
+        reads.append(job.url)
+        if len(reads) > 1:
+            await asyncio.Event().wait()  # blocks forever
+        return b'x'
+
+    repackager = Repackager(
+        source=EndlessSource(), prefix_path=str(tmp_path / 'out'), writer_info={}, range_jobs_queue_size=2,
+    )
+
+    async def run():
+        task = asyncio.create_task(repackager.run_async())
+        while len(reads) < 2:
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.2)  # the queue fills up, the producer waits
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2)
+
+    def main():
+        with patch.object(HttpRangeReader, 'read', blocking_read):
+            asyncio.run(run())
+
+    thread = threading.Thread(target=main, daemon=True)
+    thread.start()
+    thread.join(timeout=5)
+    assert not thread.is_alive(), 'shutdown did not finish'
+    assert source_done.wait(timeout=1), 'the producer thread is still waiting'
+    assert glob.glob(str(tmp_path / 'out-*')) == []
+
+
+def cancel_http_read_after_the_first_request(job, request_started):
+    """Cancel the read once the first request has started; returns how long asyncio.run() took after cancelling."""
+    async def main():
+        task = asyncio.create_task(HttpRangeReader().read(job))
+        while not request_started.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return time.monotonic()
+
+    cancelled_at = asyncio.run(main())
+    return time.monotonic() - cancelled_at
+
+
+def test_cancelled_http_read_does_not_wait_for_the_request(monkeypatch):
+    """asyncio.run() returns while the (uninterruptible) request is still blocked."""
+    monkeypatch.setitem(myrequests.RATE_LIMITER.intervals, 'blocked.example.org', 0)
+    started, release = threading.Event(), threading.Event()
+
+    def blocking_get(*args, **kwargs):
+        started.set()
+        release.wait(timeout=10)
+        raise requests.exceptions.ConnectionError('released')
+
+    try:
+        with patch('cdx_toolkit.myrequests.requests.get', side_effect=blocking_get):
+            job = RangeJob(url='https://blocked.example.org/a.warc.gz', offset=0, length=1)
+            assert cancel_http_read_after_the_first_request(job, started) < 1
+            assert not release.is_set()
+    finally:
+        release.set()
+
+
+def test_cancelled_http_read_stops_retrying(monkeypatch):
+    """The thread does not keep retrying (here: waiting 60s after a connection error) after the cancellation."""
+    monkeypatch.setitem(myrequests.RATE_LIMITER.intervals, 'down.example.org', 0)
+    started, finished = threading.Event(), threading.Event()
+    requests_made = []
+
+    def failing_get(*args, **kwargs):
+        requests_made.append(args)
+        started.set()
+        raise requests.exceptions.ConnectionError('down')
+
+    def get(*args, **kwargs):
+        try:
+            return myrequests.myrequests_get(*args, **kwargs)
+        finally:
+            finished.set()
+
+    with patch('cdx_toolkit.myrequests.requests.get', side_effect=failing_get), \
+            patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=get):
+        job = RangeJob(url='https://down.example.org/a.warc.gz', offset=0, length=1)
+        cancel_http_read_after_the_first_request(job, started)
+        assert finished.wait(timeout=2), 'the request thread is still waiting to retry'
+    assert len(requests_made) == 1
+
+
+def test_hf_reads_use_the_hf_reader(tmp_path):
+    repackager = Repackager(
+        source=RecordsSource(CAPTURES, 'hf://buckets/commoncrawl/commoncrawl'), prefix_path=str(tmp_path / 'out'),
+        writer_info={},
+    )
+    with patch('cdx_toolkit.repackage.readers.hf.make_hf_reader', fake_make_hf_reader):
+        assert repackager.run().written == 4
+    records = response_records(glob.glob(str(tmp_path / 'out-*.warc.gz')))
+    assert sorted(r.rec_headers.get_header('WARC-Target-URI') for r in records) == sorted(c['url'] for c in CAPTURES)
+
+
+@pytest.mark.parametrize('uvloop_installed', [True, False])
+def test_uvloop(monkeypatch, caplog, uvloop_installed):
+    monkeypatch.setenv('CDXT_UVLOOP', '1')
+    fake_uvloop = Mock(run=asyncio.run) if uvloop_installed else None
+    monkeypatch.setitem(__import__('sys').modules, 'uvloop', fake_uvloop)
+    repackager = Repackager(source=RecordsSource([], None), prefix_path='/nonexistent/out', writer_info={})
+
+    with caplog.at_level('INFO'):
+        assert repackager.run() == RepackageResult()
+    assert ('Using uvloop event loop' if uvloop_installed else 'uvloop is not installed') in caplog.text
+
+
+class FakeS3Client:
+    """aioboto3 S3 client stand-in that serves the files of SERVER and stores multipart uploads."""
+
+    def __init__(self):
+        self.parts = {}
+        self.objects = {}
+
+    async def create_multipart_upload(self, Bucket, Key):
+        return {'UploadId': Key}
+
+    async def upload_part(self, Key, PartNumber, Body, **kwargs):
+        self.parts[(Key, PartNumber)] = Body
+        return {'ETag': str(PartNumber)}
+
+    async def complete_multipart_upload(self, Bucket, Key, MultipartUpload, **kwargs):
+        parts = [self.parts[(Key, part['PartNumber'])] for part in MultipartUpload['Parts']]
+        self.objects[f's3://{Bucket}/{Key}'] = b''.join(parts)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get_object(self, Bucket, Key, Range):
+        start, end = (int(n) for n in Range[len('bytes='):].split('-'))
+
+        class Body:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def read(self):
+                return SERVER.files[Key][start:end + 1]
+
+        return {'Body': Body()}
+
+
+class FakeHfReader:
+    async def read(self, job):
+        return SERVER.files[job.url.split('/', 5)[-1]][job.offset:job.offset + job.length]
+
+
+@contextlib.asynccontextmanager
+async def fake_make_hf_reader(*args):
+    yield FakeHfReader()
+
+
+def mixed_scheme_captures():
+    """The captures with full s3:// and hf:// filenames, and a relative one (default download prefix)."""
+    s3, hf, relative = CAPTURES[0], CAPTURES[1], CAPTURES[2]
+    return [dict(s3, filename='s3://commoncrawl/' + s3['filename']),
+            dict(hf, filename='hf://buckets/commoncrawl/commoncrawl/' + hf['filename']), relative]
+
+
+@requires_aioboto3
+@pytest.mark.parametrize('processes', [1, 2])
+def test_full_s3_and_hf_filenames_get_their_readers(tmp_path, processes):
+    source = RecordsSource(mixed_scheme_captures(), 'https://data.example.org')
+    with patch('aioboto3.Session') as session, \
+            patch('cdx_toolkit.repackage.readers.hf.make_hf_reader', fake_make_hf_reader), \
+            patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get), \
+            patch.object(multiprocess, 'process_pool', InlineExecutor):
+        session.return_value.client.return_value = FakeS3Client()
+        if processes == 1:
+            result = Repackager(source=source, prefix_path=str(tmp_path / 'out'), writer_info={}).run()
+        else:
+            result = multiprocess.run_multiprocess_repackage(
+                source=source, n_processes=processes, readers_per_process=1, prefix_path=str(tmp_path / 'out'),
+                writer_info={}, writer_subprefix=None, write_paths_as_metadata_records=None, log_every_n=0,
+                max_attempts=1, uvloop=False,
+            )
+    assert result == RepackageResult(requested=3, written=3)
+    records = response_records(glob.glob(str(tmp_path / 'out-*.warc.gz')))
+    assert sorted(r.rec_headers.get_header('WARC-Target-URI') for r in records) == \
+        sorted(c['url'] for c in CAPTURES[:3])
+
+
+@requires_aioboto3
+def test_s3_output_with_metadata_records(tmp_path):
+    metadata = tmp_path / 'urls.txt'
+    metadata.write_bytes(b'https://example.com/\n')
+    s3 = FakeS3Client()
+    with patch('aioboto3.Session') as session, \
+            patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get):
+        session.return_value.client.return_value = s3
+        result = Repackager(
+            source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path='s3://bucket/out', writer_info={},
+            write_paths_as_metadata_records=[str(metadata)],
+        ).run()
+    assert result.written == 4
+    data = s3.objects['s3://bucket/out-001.warc.gz']
+    records = [(r.rec_type, r.content_stream().read()) for r in ArchiveIterator(io.BytesIO(data))]
+    assert [rec_type for rec_type, _ in records] == ['warcinfo', 'metadata'] + ['resource'] * 4
+    assert records[1][1] == b'https://example.com/\n'
+
+
+def test_failing_metadata_record_removes_the_file(tmp_path):
+    repackager = Repackager(
+        source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'), writer_info={},
+        write_paths_as_metadata_records=[str(tmp_path / 'missing.txt')],
+    )
+    with patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get), \
+            pytest.raises(FileNotFoundError):
+        repackager.run()
+    assert glob.glob(str(tmp_path / 'out-*')) == []
+
+
+class FakeS3Responses:
+    """An S3 client (client()) whose responses have the given bodies (bytes, or an exception raised when reading)."""
+
+    def __init__(self, *bodies):
+        self.bodies = list(bodies)
+        self.requests = 0
+        self.closed = 0
+
+    def client(self):
+        readers = self
+
+        class Body:
+            def __init__(self, content):
+                self.content = content
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc_info):
+                readers.closed += 1
+
+            async def read(self):
+                if isinstance(self.content, Exception):
+                    raise self.content
+                return self.content
+
+        class Client:
+            async def get_object(self, **kwargs):
+                readers.requests += 1
+                return {'Body': Body(readers.bodies.pop(0))}
+
+        return Client()
+
+
+def test_s3_reads_check_the_length():
+    job = RangeJob(url='s3://commoncrawl/crawl-data/a.warc.gz', offset=0, length=10)
+    with pytest.raises(RangeError, match='requested 10 bytes'):
+        asyncio.run(S3RangeReader(FakeS3Responses(b'short').client(), 1, 0).read(job))
+
+
+@requires_aioboto3
+def test_s3_reads_retry_the_whole_transfer():
+    from botocore.exceptions import ReadTimeoutError
+
+    responses = FakeS3Responses(
+        ReadTimeoutError(endpoint_url='s3://x'), ConnectionResetError(), b'short', b'0123456789'
+    )
+    job = RangeJob(url='s3://commoncrawl/crawl-data/a.warc.gz', offset=0, length=10)
+    assert asyncio.run(S3RangeReader(responses.client(), 5, 0).read(job)) == b'0123456789'
+    assert responses.requests == 4
+    assert responses.closed == 4  # also the failed responses
+
+
+@requires_aioboto3
+def test_no_s3_client_without_s3(tmp_path):
+    with patch('aioboto3.Session') as session, \
+            patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get):
+        Repackager(
+            source=RecordsSource(CAPTURES, 'https://data.example.org'), prefix_path=str(tmp_path / 'out'),
+            writer_info={},
+        ).run()
+    session.assert_not_called()
+
+
+@pytest.mark.parametrize('remote', [False, True])
+def test_multiprocess_repackage(tmp_path, remote):
+    prefix = 'memory://mp-test/out/RUN' if remote else str(tmp_path / 'RUN')
+    with patch.object(multiprocess, 'process_pool', InlineExecutor), \
+            patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get):
+        n = multiprocess.run_multiprocess_repackage(
+            source=RecordsSource(CAPTURES, 'https://data.example.org'), n_processes=3, readers_per_process=2,
+            prefix_path=prefix, writer_info={'isPartOf': 'test'}, writer_subprefix='SUB',
+            write_paths_as_metadata_records=None, log_every_n=1, aws_region_name='us-east-1', max_attempts=1,
+            uvloop=False, max_file_size=1,
+        )
+
+    assert n == RepackageResult(requested=4, written=4)
+    fs = fsspec.filesystem('memory')
+    if remote:
+        paths = ['memory://' + p for p in fs.glob('/mp-test/out/RUN-SUB-*.warc.gz')]
+    else:
+        paths = glob.glob(str(tmp_path / 'RUN-SUB-*.warc.gz'))
+    try:
+        # one file per record (--size 1), numbered by the shared counter
+        assert sorted(os.path.basename(p) for p in paths) == [f'RUN-SUB-00{i}.warc.gz' for i in range(1, 5)]
+        assert len(response_records(paths)) == 4
+        for path in paths:  # the warcinfo record names the file it is in
+            with fsspec.open(path, 'rb') as f:
+                warcinfo = next(iter(ArchiveIterator(f)))
+            assert warcinfo.rec_headers.get_header('WARC-Filename') == os.path.basename(path)
+    finally:
+        if remote:
+            fs.rm('/mp-test', recursive=True)
+
+
+def test_multiprocess_repackage_keeps_the_order_of_the_source(tmp_path):
+    """Workers do not sort their shard again (--no-sort streams, a sorted source is sorted already)."""
+    captures = CAPTURES[::-1]
+    with patch.object(multiprocess, 'process_pool', InlineExecutor), \
+            patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get):
+        multiprocess.run_multiprocess_repackage(
+            source=RecordsSource(captures, 'https://data.example.org', sort=False), n_processes=1,
+            readers_per_process=1, prefix_path=str(tmp_path / 'RUN'), writer_info={}, writer_subprefix=None,
+            write_paths_as_metadata_records=None, log_every_n=1, max_attempts=1, uvloop=False,
+        )
+    records = response_records(glob.glob(str(tmp_path / 'RUN-*.warc.gz')))
+    assert [r.rec_headers.get_header('WARC-Target-URI') for r in records] == [c['url'] for c in captures]
+
+
+def test_multiprocess_repackage_of_wayback_replays(tmp_path):
+    """hf:// (and other non-S3 remote) output goes through the shards also for --wb: the shards hold the captures."""
+    from warcio.recordbuilder import RecordBuilder
+
+    def fake_fetch_wb_warc(capture, wb):
+        assert wb == 'https://web.archive.org/web'
+        return RecordBuilder().create_warc_record(capture['url'], 'resource', payload=io.BytesIO(b'x'))
+
+    captures = [{'url': f'https://example.com/{i}', 'timestamp': '20240101000000', 'status': '200'} for i in range(3)]
+    fs = fsspec.filesystem('memory')
+    with patch.object(multiprocess, 'process_pool', InlineExecutor), \
+            patch('cdx_toolkit.repackage.readers.wayback.fetch_wb_warc', side_effect=fake_fetch_wb_warc):
+        result = multiprocess.run_multiprocess_repackage(
+            source=WaybackSource(captures, 'ia'), n_processes=1, readers_per_process=1,
+            prefix_path='memory://wb-test/RUN', writer_info={}, writer_subprefix=None,
+            write_paths_as_metadata_records=None, log_every_n=1, max_attempts=1, uvloop=False,
+        )
+    try:
+        assert result == RepackageResult(requested=3, written=3)
+        with fsspec.open('memory://wb-test/RUN-001.warc.gz', 'rb') as f:
+            uris = [r.rec_headers.get_header('WARC-Target-URI') for r in ArchiveIterator(f) if r.rec_type == 'resource']
+        assert uris == [c['url'] for c in captures]
+    finally:
+        fs.rm('/wb-test', recursive=True)
+
+
+def test_at_least_one_reader():
+    with pytest.raises(ValueError, match='n_parallel_readers'):
+        Repackager(source=RecordsSource([], None), prefix_path='out', writer_info={}, n_parallel_readers=0)
+
+
+def test_log_progress(caplog):
+    """Progress is logged every --log-every-n items."""
+    caplog.set_level(logging.INFO, logger='cdx_toolkit.repackage.repackager')
+
+    repackager = Repackager(source=RecordsSource([], None), prefix_path='/fake/prefix', writer_info={}, log_every_n=2)
+    tracker = ThroughputTracker()
+    for _ in range(5):
+        tracker.add(bytes_count=1024 * 1024, records_count=1)
+        repackager.log_progress('WARC Reader 1', tracker)
+
+    assert caplog.text.count('WARC Reader 1: ') == 2
+    assert 'WARC Reader 1: 4 items, 4.0 MB in ' in caplog.text
+
+
+def test_writer_error_with_a_blocked_source(tmp_path):
+    """The writer fails while the source waits for its next capture (e.g. a generator waiting for input): run()
+    raises the writer's error at once, without waiting for the source."""
+    release = threading.Event()
+
+    def captures():
+        yield CAPTURES[0]
+        release.wait()  # blocks until the end of the test
+        yield CAPTURES[1]
+
+    async def failing_write(self, data):
+        raise OSError('disk full')
+
+    outcome = []
+
+    def main():
+        repackager = Repackager(
+            source=RecordsSource(captures(), 'https://data.example.org', sort=False),
+            prefix_path=str(tmp_path / 'out'), writer_info={},
+        )
+        try:
+            repackager.run()
+        except OSError as e:
+            outcome.append(e)
+
+    with patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get), \
+            patch.object(LocalOutputFile, 'write', failing_write):
+        thread = threading.Thread(target=main, daemon=True)
+        thread.start()
+        thread.join(timeout=5)
+    release.set()
+    assert not thread.is_alive(), 'run() waits for the blocked source'
+    assert [str(e) for e in outcome] == ['disk full']
+    assert glob.glob(str(tmp_path / 'out-*')) == []
+
+
+CHILD = '''
+import faulthandler
+import sys
+from unittest.mock import patch
+faulthandler.dump_traceback_later(20, exit=True)  # the stacks of all threads if it hangs
+from cdx_toolkit.cli import main
+from cdx_toolkit.repackage.writers.local import LocalOutputFile
+from tests.repackage.test_repackager import fake_get
+
+async def failing_write(self, data):
+    raise OSError('disk full')
+
+with patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get), \\
+        patch.object(LocalOutputFile, 'write', failing_write):
+    main(['repackage', '-', '--no-sort', '--warc-download-prefix', 'https://data.example.org',
+          '--prefix', sys.argv[1]])
+'''
+
+
+def test_writer_error_with_stdin_still_open(tmp_path):
+    """cdxt repackage reading stdin from a process that keeps running: the writer's error ends cdxt at once."""
+    import json
+    import subprocess
+    import sys
+
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    # stderr to a file: a pipe that is not read while the process runs would block it once full (a few KB on
+    # Windows)
+    stderr_path = tmp_path / 'stderr.txt'
+    with open(stderr_path, 'w') as stderr_file:
+        proc = subprocess.Popen(
+            [sys.executable, '-c', CHILD, str(tmp_path / 'out')], cwd=root, stdin=subprocess.PIPE,
+            stderr=stderr_file, text=True,
+        )
+        try:
+            proc.stdin.write(json.dumps(CAPTURES[0]) + '\n')
+            proc.stdin.flush()  # and stdin stays open
+            proc.wait(timeout=30)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            proc.stdin.close()
+    stderr = stderr_path.read_text()
+    assert proc.returncode != 0, stderr
+    assert 'disk full' in stderr, stderr
+    assert glob.glob(str(tmp_path / 'out-*')) == []
+
+
+CHILD_WITHOUT_FAILURE = '''
+import sys
+from unittest.mock import patch
+from cdx_toolkit.cli import main
+from tests.repackage.test_repackager import fake_get
+
+with patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get):
+    main(['repackage', '-', '--no-sort', '--warc-download-prefix', 'https://data.example.org',
+          '--prefix', sys.argv[1]])
+'''
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='SIGINT')
+def test_ctrl_c_with_stdin_still_open(tmp_path):
+    """Ctrl-C while cdxt repackage waits for more input on stdin: it ends at once, and removes the current file."""
+    import json
+    import signal
+    import subprocess
+
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    proc = subprocess.Popen(
+        [sys.executable, '-c', CHILD_WITHOUT_FAILURE, str(tmp_path / 'out')], cwd=root, stdin=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, text=True,  # not a pipe that nobody reads (it would block the process once full)
+    )
+    try:
+        proc.stdin.write(json.dumps(CAPTURES[0]) + '\n')
+        proc.stdin.flush()  # and stdin stays open
+        deadline = time.monotonic() + 30
+        while not glob.glob(str(tmp_path / 'out-*')) and time.monotonic() < deadline:
+            time.sleep(0.05)  # the first record is being written
+        proc.send_signal(signal.SIGINT)
+        proc.wait(timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.stdin.close()
+    assert proc.returncode != 0
+    assert glob.glob(str(tmp_path / 'out-*')) == []
+
+
+def test_cancel_event_stops_the_pipeline_and_removes_the_file(tmp_path):
+    """The event set by the parent of the worker processes (when another worker failed)."""
+    from cdx_toolkit.repackage.repackager import RepackageCancelled
+
+    release, cancel = threading.Event(), threading.Event()
+
+    def captures():
+        yield CAPTURES[0]
+        release.wait()
+        yield CAPTURES[1]
+
+    outcome = []
+
+    def main():
+        repackager = Repackager(
+            source=RecordsSource(captures(), 'https://data.example.org', sort=False),
+            prefix_path=str(tmp_path / 'out'), writer_info={}, cancel=cancel,
+        )
+        try:
+            outcome.append(repackager.run())
+        except RepackageCancelled as e:
+            outcome.append(e)
+
+    with patch('cdx_toolkit.repackage.readers.http.myrequests_get', side_effect=fake_get):
+        thread = threading.Thread(target=main, daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 10
+        while not glob.glob(str(tmp_path / 'out-*')) and time.monotonic() < deadline:
+            time.sleep(0.01)  # the first record is being written
+        cancel.set()
+        thread.join(timeout=5)
+    release.set()
+    assert not thread.is_alive()
+    assert len(outcome) == 1 and isinstance(outcome[0], RepackageCancelled)
+    assert glob.glob(str(tmp_path / 'out-*')) == []

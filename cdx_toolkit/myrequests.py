@@ -1,6 +1,7 @@
-from typing import Optional
+from typing import Dict, Optional
 import requests
 import logging
+import threading
 import time
 from urllib.parse import urlparse
 
@@ -23,44 +24,73 @@ previously_seen_hostnames = {
 }
 
 
-def dns_fatal(hostname):
-    """We have a dns error, should we fail immediately or not?"""
-    if hostname not in previously_seen_hostnames:
-        return True
+# A CDX index server (pywb) that cannot read its index (e.g. from S3) answers with the text of the exception, e.g.
+# "Error: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))", and a
+# status that is not retried otherwise: a temporary failure
+TEMPORARY_CDX_ERRORS = (
+    'Connection aborted', 'RemoteDisconnected', 'Connection reset', 'Read timed out', 'ConnectTimeout',
+    'Max retries exceeded',
+)
 
 
-retry_info = {
-    'default': {
-        'next_fetch': 0,
-        'minimum_interval': DEFAULT_MIN_RETRY_INTERVAL,
-    },
-    'index.commoncrawl.org': {
-        'next_fetch': 0,
-        'minimum_interval': CC_INDEX_MIN_RETRY_INTERVAL,
-    },
-    'data.commoncrawl.org': {
-        'next_fetch': 0,
-        'minimum_interval': CC_DATA_MIN_RETRY_INTERVAL,
-    },
-    'web.archive.org': {
-        'next_fetch': 0,
-        'minimum_interval': IA_MIN_RETRY_INTERVAL,
-    },
-}
+def is_temporary_cdx_error(resp) -> bool:
+    text = resp.text[:1000]
+    return text.startswith('Error:') and any(marker in text for marker in TEMPORARY_CDX_ERRORS)
 
 
-def get_retries(hostname):
-    if hostname not in retry_info:
-        retry_info[hostname] = retry_info['default'].copy()
-        LOGGER.debug('initializing retry info for new host ' + hostname)
-    entry = retry_info[hostname]
-    if not entry['next_fetch']:
-        entry['next_fetch'] = time.time()
-    return entry['next_fetch'], entry['minimum_interval']
+def dns_fatal(hostname) -> bool:
+    """We have a dns error, should we fail immediately or not? Not for a host that worked before (the error may be
+    temporary)."""
+    return hostname not in previously_seen_hostnames
 
 
-def update_next_fetch(hostname, next_fetch):
-    retry_info[hostname]['next_fetch'] = next_fetch
+class HostRateLimiter:
+    """The minimum interval between the starts of requests to the same host, also when requests are made from
+    several threads (e.g. the parallel WARC readers of cdxt repackage). Every attempt, also a retry, takes its
+    turn. Times are time.monotonic()."""
+
+    def __init__(self, default_interval: float, intervals: Dict[str, float]):
+        self.default_interval = default_interval
+        self.intervals = dict(intervals)  # seconds, by hostname
+        self._next_fetch: Dict[str, float] = {}  # the earliest start of the next request, by hostname
+        self._lock = threading.Lock()
+
+    def minimum_interval(self, hostname: str) -> float:
+        return self.intervals.get(hostname, self.default_interval)
+
+    def reserve(self, hostname: str, now: float) -> float:
+        """The time at which the next request to `hostname` may start, at least the minimum interval after the
+        previous one; the time is reserved, so concurrent requests are spaced out too."""
+        with self._lock:
+            fetch_time = max(now, self._next_fetch.get(hostname, now))
+            self._next_fetch[hostname] = fetch_time + self.minimum_interval(hostname)
+        return fetch_time
+
+    def finish(self, hostname: str) -> None:
+        """After a request (which may have taken long, with retries): the next one may start the minimum interval
+        from now, or later if that time is reserved already."""
+        with self._lock:
+            next_fetch = time.monotonic() + self.minimum_interval(hostname)
+            self._next_fetch[hostname] = max(self._next_fetch.get(hostname, 0), next_fetch)
+
+
+RATE_LIMITER = HostRateLimiter(DEFAULT_MIN_RETRY_INTERVAL, {
+    'index.commoncrawl.org': CC_INDEX_MIN_RETRY_INTERVAL,
+    'data.commoncrawl.org': CC_DATA_MIN_RETRY_INTERVAL,
+    'web.archive.org': IA_MIN_RETRY_INTERVAL,
+})
+
+
+class RequestCancelled(Exception):
+    """The request was cancelled with its `stop` event (while waiting before the request or a retry)."""
+
+
+def _sleep(seconds: float, stop: Optional[threading.Event]) -> None:
+    """Sleep, or raise RequestCancelled as soon as `stop` is set."""
+    if stop is None:
+        time.sleep(seconds)
+    elif stop.wait(seconds):
+        raise RequestCancelled()
 
 
 def myrequests_get(
@@ -72,9 +102,12 @@ def myrequests_get(
     raise_error_after_n_errors: Optional[int] = None,
     raise_warning_after_n_errors: Optional[int] = None,
     retry_max_sec: int = 60,
+    stop: Optional[threading.Event] = None,
 ):
-    t = time.time()
+    """GET with the minimum interval between requests to a host, and retries.
 
+    With `stop`, the waits (before the request, between retries) end with RequestCancelled once it is set; a
+    request in progress ends with its timeout."""
     if raise_error_after_n_errors is None:
         raise_error_after_n_errors = MAX_ERRORS
 
@@ -82,15 +115,7 @@ def myrequests_get(
         raise_warning_after_n_errors = WARNING_AFTER_N_ERRORS
 
     hostname = urlparse(url).hostname
-    next_fetch, minimum_interval = get_retries(hostname)
-
-    if t < next_fetch:
-        dt = next_fetch - t
-        if dt > 3.1:
-            LOGGER.debug('sleeping for {:.3f}s before next fetch'.format(dt))
-        time.sleep(dt)
-    # next_fetch is also updated at the bottom
-    update_next_fetch(hostname, next_fetch + minimum_interval)
+    minimum_interval = RATE_LIMITER.minimum_interval(hostname)
 
     if params:
         if 'from_ts' in params:
@@ -111,10 +136,14 @@ def myrequests_get(
     retries = 0
     connect_errors = 0
     while retry:
+        if stop is not None and stop.is_set():
+            raise RequestCancelled()
+        _wait_for_turn(hostname, stop)  # after the backoff of a retry: both the backoff and the interval hold
         try:
             LOGGER.debug('getting %s %r', url, params)
             resp = requests.get(url, params=params, headers=headers, timeout=(30.0, 30.0), allow_redirects=False)
-            if cdx and resp.status_code in {400, 404}:
+            temporary_cdx_error = cdx and is_temporary_cdx_error(resp)
+            if cdx and resp.status_code in {400, 404} and not temporary_cdx_error:
                 # 400: ia html error page -- probably page= is too big -- not an error
                 # 404: pywb {'error': 'No Captures found for: www.pbxxxxxxm.com/*'} -- not an error
                 LOGGER.debug('giving up with status %d, no captures found', resp.status_code)
@@ -123,7 +152,7 @@ def myrequests_get(
             if allow404 and resp.status_code == 404:
                 retry = False
                 break
-            if resp.status_code in {429, 500, 502, 503, 504, 509}:  # pragma: no cover
+            if resp.status_code in {429, 500, 502, 503, 504, 509} or temporary_cdx_error:
                 # 503=slow down, 50[24] are temporary outages, 500=Amazon S3 generic error
                 # CC takes a 503 from storage and then emits a 500 with error text in resp.text
                 # I have never seen IA or CC send 429 or 509, but just in case...
@@ -133,7 +162,7 @@ def myrequests_get(
                 LOGGER.log(level, 'retrying after %.2fs for %d', retry_sec, resp.status_code)
                 if resp.text:
                     LOGGER.log(level, 'response body is %s', resp.text)
-                time.sleep(retry_sec)
+                _sleep(retry_sec, stop)
                 retry_sec = min(retry_sec * 2, retry_max_sec)
                 continue
             if resp.status_code in {400, 404}:  # pragma: no cover
@@ -156,7 +185,7 @@ def myrequests_get(
                 or ('nodename nor servname provided, or not known' in string)  # macos
                 or ('getaddrinfo failed' in string)
             ):  # windows
-                if dns_fatal(url):
+                if dns_fatal(hostname):
                     raise ValueError('invalid hostname in url ' + url) from None
 
             if connect_errors > raise_error_after_n_errors:
@@ -165,17 +194,23 @@ def myrequests_get(
             if connect_errors > raise_warning_after_n_errors:
                 LOGGER.warning(string)
             LOGGER.info('retrying after {:.2f}s for '.format(retry_max_sec) + str(e))
-            time.sleep(retry_max_sec)  # notice the extra-long sleep
+            _sleep(retry_max_sec, stop)  # notice the extra-long sleep
             retry_sec = min(retry_sec * 2, retry_max_sec)
         except requests.exceptions.RequestException as e:  # pragma: no cover
             LOGGER.warning('something unexpected happened, giving up after %s', str(e))
             raise
 
-    hostname = urlparse(url).hostname
-    if hostname not in previously_seen_hostnames:
-        previously_seen_hostnames.add(hostname)
-
-    # in case we had a lot of retries, etc
-    update_next_fetch(hostname, time.time() + minimum_interval)
+    previously_seen_hostnames.add(hostname)
+    RATE_LIMITER.finish(hostname)  # in case we had a lot of retries, etc
 
     return resp
+
+
+def _wait_for_turn(hostname: str, stop: Optional[threading.Event]) -> None:
+    """Wait until a request to `hostname` may start (see HostRateLimiter)."""
+    now = time.monotonic()
+    dt = RATE_LIMITER.reserve(hostname, now) - now
+    if dt > 0:
+        if dt > 3.1:
+            LOGGER.debug('sleeping for {:.3f}s before next fetch'.format(dt))
+        _sleep(dt, stop)

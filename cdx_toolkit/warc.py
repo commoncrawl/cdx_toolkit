@@ -3,6 +3,7 @@ from io import BytesIO
 import datetime
 import logging
 import os
+import warnings
 
 try:
     import fsspec
@@ -28,7 +29,8 @@ def _is_s3_url(url):
 def _require_s3_deps():
     if not _HAS_FSSPEC:
         raise RuntimeError(
-            'Remote filesystem (S3) support requires optional dependencies. Install cdx_toolkit[s3].'
+            "Remote filesystem (S3) support requires optional dependencies. "
+            "Install them with: pip install 'cdx_toolkit[s3]'"
         )
 
 
@@ -127,6 +129,11 @@ def fake_wb_warc(url, wb_url, resp, capture):
     )
 
 
+def wb_replay_url(capture, wb, modifier='id_'):
+    """The URL of the capture in the wayback machine `wb` (with `modifier` id_: the original content)."""
+    return f'{wb}/{capture["timestamp"]}{modifier}/{quote(capture["url"])}'
+
+
 def fetch_wb_warc(capture, wb, modifier='id_'):
     for field in ('url', 'timestamp', 'status'):
         if field not in capture:  # pragma: no cover
@@ -136,9 +143,7 @@ def fetch_wb_warc(capture, wb, modifier='id_'):
         raise ValueError('No wayback configured')
 
     url = capture['url']
-    timestamp = capture['timestamp']
-
-    wb_url = f'{wb}/{timestamp}{modifier}/{quote(url)}'
+    wb_url = wb_replay_url(capture, wb, modifier)
 
     kwargs = {}
     status = capture['status']
@@ -196,11 +201,17 @@ def fetch_warc_record(capture, warc_download_prefix):
 
 
 class CDXToolkitWARCWriter:
-    """Writer for WARC files.
+    """Writer for WARC files (deprecated: use cdx_toolkit.repackage.repackage()).
 
     The fsspec package is used for writting to local or remote file system, e.g., S3."""
 
     def __init__(self, prefix, subprefix, info, size=1000000000, gzip=True, warc_version=None):
+        warnings.warn(
+            'cdx_toolkit.warc.get_writer() and CDXToolkitWARCWriter are deprecated and will be removed in '
+            'a future version; use cdx_toolkit.repackage.repackage()',
+            FutureWarning,
+            stacklevel=2,
+        )
         self.prefix = prefix
         self.subprefix = subprefix
         self.info = info

@@ -8,9 +8,8 @@ on:
     branches:
     - main
 
-# These permissions are needed to interact with AWS S3 via GitHub's OIDC Token endpoint
+# the tests make no remote requests (they are mocked); the live tests run in ci-slow.yaml
 permissions:
-  id-token: write
   contents: read
   pull-requests: read
 
@@ -39,7 +38,7 @@ jobs:
           - python-version: '3.14'
             os: ubuntu-latest
             env:
-              LOGLEVEL=DEBUG
+              CDXT_LOGLEVEL=DEBUG
             EXTRA: true
           - python-version: '3.14'
             os: macos-latest
@@ -68,21 +67,8 @@ jobs:
           pip install setuptools
 
       - name: Install cdx_toolkit
-        run: pip install .[all]
+        run: pip install ".[all]"
 
-      - name: Configure AWS credentials from OIDC (disabled for forks)
-        if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push'
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: arn:aws:iam::837454214164:role/GitHubActions-Role
-          aws-region: us-east-1
-
-      - name: Disable S3 unit tests for Python 3.8 (botocore requires Python 3.9+)
-        if: ${{ startsWith(matrix.python-version, '3.8') }}
-        uses: actions/github-script@v9
-        with:
-          script: |
-            core.exportVariable('CDXT_DISABLE_S3_TESTS', '1')
       - name: Set environment variables for faster unit tests (requests are mocked)
         uses: actions/github-script@v9
         with:
@@ -93,8 +79,7 @@ jobs:
             core.exportVariable('CDXT_CC_INDEX_MIN_RETRY_INTERVAL', '0.01')
             core.exportVariable('CDXT_CC_DATA_MIN_RETRY_INTERVAL', '0.01')
             core.exportVariable('CDXT_IA_MIN_RETRY_INTERVAL', '0.01')
-            core.exportVariable('DISABLE_ATHENA_TESTS', '1')
-            core.exportVariable('LOGLEVEL', 'DEBUG')
+            core.exportVariable('CDXT_LOGLEVEL', 'DEBUG')
 
       - name: Lint code
         run: |
@@ -140,7 +125,7 @@ jobs:
           pip install setuptools
 
       - name: Install cdx_toolkit (minimal)
-        run: pip install .[test]
+        run: pip install ".[test]"
 
       - name: Set environment variables for faster unit tests (requests are mocked)
         uses: actions/github-script@v9
@@ -152,8 +137,7 @@ jobs:
             core.exportVariable('CDXT_CC_INDEX_MIN_RETRY_INTERVAL', '0.01')
             core.exportVariable('CDXT_CC_DATA_MIN_RETRY_INTERVAL', '0.01')
             core.exportVariable('CDXT_IA_MIN_RETRY_INTERVAL', '0.01')
-            core.exportVariable('DISABLE_ATHENA_TESTS', '1')
-            core.exportVariable('LOGLEVEL', 'DEBUG')
+            core.exportVariable('CDXT_LOGLEVEL', 'DEBUG')
 
       - name: test minimal
         run: |

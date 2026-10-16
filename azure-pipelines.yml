@@ -11,7 +11,7 @@ jobs:
           python.version: '3.6'
         Python36debug:
           python.version: '3.6'
-          myenv: LOGLEVEL=DEBUG EXACT_PIP_VERSIONS=1
+          myenv: CDXT_LOGLEVEL=DEBUG EXACT_PIP_VERSIONS=1
         Python37:
           python.version: '3.7'
         Python38:

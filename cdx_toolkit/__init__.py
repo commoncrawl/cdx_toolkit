@@ -84,7 +84,7 @@ def cdx_to_captures(resp, wb=None, warc_download_prefix=None):
         ret = munge_fields(fields, lines)
         return [CaptureObject(r, wb=wb, warc_download_prefix=warc_download_prefix) for r in ret]
 
-    raise ValueError('cannot decode response, first bytes are '+repr(text[:50]))  # pragma: no cover
+    raise ValueError(f'cannot decode response (status {resp.status_code}), first bytes are {text[:50]!r}')
 
 
 class CaptureObject(MutableMapping):

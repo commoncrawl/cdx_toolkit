@@ -7,6 +7,9 @@ def test_padding():
     assert timeutils.pad_timestamp('1998') == '19980101000000'
     assert timeutils.pad_timestamp_up('199802') == '19980228235959'
     assert timeutils.pad_timestamp_up('199812') == '19981231235959'
+    assert timeutils.pad_timestamp_up('202402') == '20240229235959'  # leap year
+    assert timeutils.pad_timestamp_up('20260410') == '20260410235959'  # the day is kept
+    assert timeutils.pad_timestamp_up('2026041012') == '20260410125959'
 
 
 def test_time_timestamp():

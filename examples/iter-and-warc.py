@@ -1,33 +1,24 @@
 #!/usr/bin/env python
+'''
+Select captures from Common Crawl's CDX index and write them into a WARC file,
+like `cdxt index cc --url 'commoncrawl.org/blog/*' --filter =status:200 --limit 10 | cdxt repackage ...`
+'''
+from cdx_toolkit.indexes import IndexQuery, open_index
+from cdx_toolkit.repackage import repackage
 
-import cdx_toolkit
+index = open_index('cc')
+query = IndexQuery(urls='commoncrawl.org/blog/*', filters='=status:200', limit=10)
 
-cdx = cdx_toolkit.CDXFetcher(source='cc')
-url = 'commoncrawl.org/blog/*'
+captures = []
+for capture in index.records(query):
+    print('extracting url', capture['url'], 'timestamp', capture['timestamp'])
+    captures.append(capture)
 
-warcinfo = {
-    'software': 'pypi_cdx_toolkit iter-and-warc example',
-    'isPartOf': 'EXAMPLE-COMMONCRAWL',
-    'description': 'warc extraction',
-    'format': 'WARC file version 1.0',
-}
-
-with cdx_toolkit.warc.get_writer('EXAMPLE', 'COMMONCRAWL', warcinfo, warc_version='1.1') as writer:
-    for obj in cdx.iter(url, limit=10):
-        url = obj['url']
-        status = obj['status']
-        timestamp = obj['timestamp']
-
-        print('considering extracting url', url, 'timestamp', timestamp)
-        if status != '200':
-            print(' skipping because status was {}, not 200'.format(status))
-            continue
-
-        try:
-            record = obj.fetch_warc_record()
-        except RuntimeError:
-            print(' skipping capture for RuntimeError 404: %s %s', url, timestamp)
-            continue
-        writer.write_record(record)
-
-        print(' wrote', url)
+result = repackage(
+    captures,
+    prefix='EXAMPLE',
+    subprefix='COMMONCRAWL',
+    is_part_of='EXAMPLE-COMMONCRAWL',
+    description='warc extraction',
+)
+print('wrote', result.written, 'captures to EXAMPLE-COMMONCRAWL-001.warc.gz, ...;', result.failed, 'failed')

@@ -1,0 +1,254 @@
+"""Multi-process repackage: shard the range jobs and fetch each shard in its own process
+(one asyncio event loop per CPU core), all writing into one series of output WARCs.
+
+A single asyncio loop saturates one CPU core on many small range-GETs, so reaching
+all cores needs multiple processes. This orchestrator keeps that entirely inside
+``cdxt repackage`` (no external driver):
+
+1. Drain the configured source once and split it into N shard files (JSONL records with the full
+   WARC URL), hashed by WARC filename so every record of a file stays in one shard.
+2. Run one worker process per (non-empty) shard concurrently. Each worker **rotates its
+   output at ``--size``**; every output file is a self-contained WARC with its own
+   ``warcinfo`` record.
+3. The file numbers come from **one counter shared by all workers**: whenever a worker
+   starts a new file it takes the next number, so the files are written under their final
+   names ``<prefix>[-<subprefix>]-001.warc.gz``, ``-002`` … right away (and the ``warcinfo``
+   record names the file it is in). Which worker writes which number depends on timing.
+   Output honours ``--size`` as single-process mode does (files are a target size; the last
+   file of each worker may be short, so up to N short files appear).
+4. A failing worker (or Ctrl-C) stops all of them: the parent sets an event shared by all workers, whose
+   pipelines then abort the file they are writing (completed files are kept). A worker that has not
+   stopped after ``CANCEL_TIMEOUT`` seconds is terminated.
+
+The WARC writer supports local and S3 output. For other fsspec destinations (e.g. an
+``hf://`` bucket) the files are staged in a local directory under their final names and
+copied to the destination afterwards.
+"""
+import glob
+import hashlib
+import logging
+import multiprocessing
+import os
+import posixpath
+import shutil
+import tempfile
+import time
+
+import fsspec
+from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
+from typing import Callable, Dict, List, Optional, Tuple
+
+from cdx_toolkit.aws import process_pool
+from cdx_toolkit.record_io import RecordWriter, read_records
+from cdx_toolkit.repackage.jobs import RecordsSource, RepackageResult, WaybackJob, WaybackSource
+from cdx_toolkit.repackage.repackager import Repackager
+from cdx_toolkit.repackage.urls import is_s3_url
+from cdx_toolkit.repackage.writers.series import generate_warc_filename
+
+logger = logging.getLogger(__name__)
+
+# Concurrency for copying staged files to a non-S3 remote destination (override with CDXT_COPY_CONCURRENCY).
+_COPY_CONCURRENCY = int(os.environ.get('CDXT_COPY_CONCURRENCY', '16'))
+
+# Seconds the workers get to stop (and abort their current file) after a failure, before they are terminated.
+CANCEL_TIMEOUT = 60
+
+# The shared counter of output file numbers and the cancel event, set in each worker process by _init_worker.
+_FILE_SEQUENCE = None
+_CANCEL = None
+
+
+def _init_worker(file_sequence, cancel) -> None:
+    global _FILE_SEQUENCE, _CANCEL
+    _FILE_SEQUENCE = file_sequence
+    _CANCEL = cancel
+
+
+def _next_file_sequence(_current: int) -> int:
+    """Take the next output file number from the counter shared by all workers."""
+    with _FILE_SEQUENCE.get_lock():
+        _FILE_SEQUENCE.value += 1
+        return _FILE_SEQUENCE.value
+
+
+def _run_worker(cfg: Dict) -> RepackageResult:
+    """Worker entrypoint (runs in a child process): fetch one shard into the output WARCs."""
+    if cfg.get('uvloop'):
+        os.environ['CDXT_UVLOOP'] = '1'
+    # the shard is in the order of the source (sorted, unless --no-sort), streamed
+    records = read_records(cfg['shard'], 'jsonl')
+    if cfg['wb']:
+        source = WaybackSource(records, cfg['wb'])
+    else:
+        source = RecordsSource(records, warc_download_prefix=None, sort=False)
+    repackager = Repackager(
+        source=source,
+        prefix_path=cfg['prefix_path'],
+        writer_info=cfg['writer_info'],
+        writer_subprefix=cfg['subprefix'],
+        write_paths_as_metadata_records=cfg['write_paths_as_metadata_records'],
+        log_every_n=cfg['log_every_n'],
+        n_parallel_readers=cfg['readers'],
+        aws_region_name=cfg['aws_region_name'],
+        max_attempts=cfg['max_attempts'],
+        max_file_size=cfg['max_file_size'],  # rotate at --size
+        next_file_sequence=_next_file_sequence,
+        cancel=_CANCEL,
+    )
+    return repackager.run()
+
+
+def run_worker_processes(worker: Callable, configs: List, file_sequence, mp_context,
+                         cancel_timeout: float = None) -> List:
+    """Run worker(config) for each config, each in its own process; the results in the order of the configs.
+
+    The first failure (or KeyboardInterrupt) is raised as soon as it happens, after the other workers were
+    stopped: the shared cancel event is set, workers that have not started are cancelled, and running workers
+    get `cancel_timeout` seconds to stop (abort their current file) before they are terminated. A terminated
+    worker cannot abort an S3 multipart upload; an S3 lifecycle rule removes incomplete uploads."""
+    cancel_timeout = CANCEL_TIMEOUT if cancel_timeout is None else cancel_timeout
+    cancel = mp_context.Event()
+    ex = process_pool(len(configs), mp_context=mp_context, initializer=_init_worker, initargs=(file_sequence, cancel))
+    futures = []
+    try:
+        futures = [ex.submit(worker, config) for config in configs]
+        done, _ = wait(futures, return_when=FIRST_EXCEPTION)
+        for future in done:
+            future.result()  # raises the first failure
+        results = [future.result() for future in futures]
+    except BaseException:
+        cancel.set()
+        for future in futures:
+            future.cancel()
+        _, running = wait(futures, timeout=cancel_timeout)
+        if running:
+            logger.error('%d worker(s) did not stop within %ds, terminating them (an S3 multipart upload of an '
+                         'unfinished file may be left incomplete)', len(running), cancel_timeout)
+            # ProcessPoolExecutor.terminate_workers() is new in Python 3.14
+            processes = list((getattr(ex, '_processes', None) or {}).values())
+            for process in processes:
+                process.terminate()
+            for process in processes:
+                process.join(timeout=10)
+        ex.shutdown(wait=False, cancel_futures=True)
+        raise
+    ex.shutdown(wait=True)
+    return results
+
+
+def _shard_record(job) -> dict:
+    """The record of a job in a shard: the WARC location with the full WARC URL as filename (read without a
+    download prefix), or the capture of a wayback replay."""
+    if isinstance(job, WaybackJob):
+        return dict(job.capture)
+    return {'filename': job.url, 'offset': job.offset, 'length': job.length}
+
+
+def _split_source_to_shards(source, n: int, out_dir: str) -> Tuple[List[str], List[int]]:
+    """Drain the source once into N shard files, hashed by WARC file (or replay URL).
+
+    Returns the shard paths and the number of jobs in each shard."""
+    paths = [os.path.join(out_dir, f'shard.{i}.jsonl') for i in range(n)]
+    files = [open(p, 'w', encoding='utf-8') for p in paths]
+    writers = [RecordWriter(f, 'jsonl') for f in files]
+    counts = [0] * n
+    total = 0
+    try:
+        for job in source.iter_range_jobs():
+            key = (job.filename or job.url or '').encode()
+            idx = int(hashlib.md5(key).hexdigest(), 16) % n
+            writers[idx].write(_shard_record(job))
+            counts[idx] += 1
+            total += 1
+    finally:
+        for f in files:
+            f.close()
+    logger.info('Sharded %d range jobs into %d shards: %s', total, n, counts)
+    return paths, counts
+
+
+def run_multiprocess_repackage(
+    *,
+    source,
+    n_processes: int,
+    readers_per_process: int,
+    prefix_path: str,
+    writer_info: Dict,
+    writer_subprefix: Optional[str],
+    write_paths_as_metadata_records: Optional[List[str]],
+    log_every_n: int,
+    aws_region_name: Optional[str] = None,
+    max_attempts: int,
+    uvloop: bool,
+    max_file_size: Optional[int] = 1_000_000_000,
+) -> RepackageResult:
+    """Shard -> N worker processes (rotating at --size) writing one global
+    <prefix>[-<subprefix>]-NNN.warc.gz series."""
+    tmp_dir = tempfile.mkdtemp(prefix='cdxt_shards_')
+    start = time.time()
+    try:
+        shards, counts = _split_source_to_shards(source, n_processes, tmp_dir)
+        # empty shards would only produce WARC files without records
+        shards = [path for path, count in zip(shards, counts) if count > 0] or shards[:1]
+
+        # The WARC writer supports S3 and local FS only. Other fsspec destinations
+        # (e.g. an hf:// bucket) are staged in a local dir and copied afterwards.
+        remote_non_s3 = ('://' in prefix_path) and not is_s3_url(prefix_path)
+        staging_dir = os.path.join(tmp_dir, 'out')
+        if remote_non_s3:
+            os.makedirs(staging_dir)
+        # staged under the final file names, so that the warcinfo records name the files they are in
+        write_prefix = os.path.join(staging_dir, posixpath.basename(prefix_path)) if remote_non_s3 else prefix_path
+
+        configs = [
+            dict(
+                shard=shard,
+                prefix_path=write_prefix,
+                subprefix=writer_subprefix,
+                writer_info=writer_info,
+                write_paths_as_metadata_records=write_paths_as_metadata_records,
+                log_every_n=log_every_n,
+                readers=readers_per_process,
+                aws_region_name=aws_region_name,
+                max_attempts=max_attempts,
+                max_file_size=max_file_size,
+                uvloop=uvloop,
+                wb=getattr(source, 'wb', None),
+            )
+            for shard in shards
+        ]
+
+        logger.info('Launching %d worker processes x %d readers', len(configs), readers_per_process)
+        mp_context = multiprocessing.get_context()
+        file_sequence = mp_context.Value('i', 0)
+        results = run_worker_processes(_run_worker, configs, file_sequence, mp_context)
+        result = sum(results, RepackageResult())
+        total = result.written
+        n_files = file_sequence.value
+        fetch_elapsed = time.time() - start
+        logger.info('All %d workers done: %d records in %d files in %.1fs (%.0f rec/s)',
+                    len(configs), total, n_files, fetch_elapsed, total / fetch_elapsed if fetch_elapsed else 0)
+
+        if remote_non_s3:
+            _copy_staged_files(write_prefix, prefix_path)
+
+        first_file = generate_warc_filename(prefix_path, sequence=1, writer_subprefix=writer_subprefix, gzip=True)
+        logger.info('Repackage complete -> %d files %s (%.1fs total)', n_files, first_file, time.time() - start)
+        return result
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _copy_staged_files(staging_prefix: str, prefix_path: str) -> List[str]:
+    """Copy the locally staged <staging_prefix>-... files to <prefix_path>-... (e.g. on hf://)."""
+    staged = sorted(glob.glob(f'{staging_prefix}-*.warc.gz'))
+
+    def _copy(src):
+        dest = prefix_path + src[len(staging_prefix):]
+        with open(src, 'rb') as fi, fsspec.open(dest, 'wb') as fo:
+            shutil.copyfileobj(fi, fo, length=8 * 1024 * 1024)
+        logger.info('Wrote %s', dest)
+        return dest
+
+    with ThreadPoolExecutor(max_workers=max(1, min(_COPY_CONCURRENCY, len(staged)))) as ex:
+        return list(ex.map(_copy, staged))
